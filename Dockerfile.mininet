@@ -1,0 +1,33 @@
+FROM ubuntu:22.04
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+
+RUN printf 'Acquire::Retries "5";\nAcquire::ForceIPv4 "true";\n' > /etc/apt/apt.conf.d/80-retries && \
+    apt-get update && \
+    apt-get install -y --fix-missing --no-install-recommends \
+    ethtool \
+    hping3 \
+    iproute2 \
+    iputils-ping \
+    kmod \
+    mininet \
+    net-tools \
+    nmap \
+    openvswitch-common \
+    openvswitch-switch \
+    procps \
+    python3 \
+    tcpdump && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/*
+
+COPY docker/mininet/entrypoint.sh /usr/local/bin/mininet-entrypoint
+
+RUN chmod +x /usr/local/bin/mininet-entrypoint
+
+WORKDIR /workspace/ryu-apps
+
+ENTRYPOINT ["/usr/local/bin/mininet-entrypoint"]
+CMD ["sleep", "infinity"]

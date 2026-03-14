@@ -1,0 +1,84 @@
+{% extends "base.html" %}
+
+{% block content %}
+<section class="card-grid card-grid--metrics">
+  <article class="metric-card">
+    <span class="metric-card__label">Rolling Capture</span>
+    <strong class="metric-card__value" id="captures-status">inactive</strong>
+    <span class="metric-card__meta" id="captures-active-session">Waiting for topology capture</span>
+  </article>
+  <article class="metric-card">
+    <span class="metric-card__label">Rolling Files</span>
+    <strong class="metric-card__value" id="captures-session-count">0</strong>
+    <span class="metric-card__meta">Ring-buffer files currently discoverable</span>
+  </article>
+  <article class="metric-card">
+    <span class="metric-card__label">Preserved Snapshots</span>
+    <strong class="metric-card__value" id="captures-file-count">0</strong>
+    <span class="metric-card__meta">Alert-linked forensic evidence</span>
+  </article>
+  <article class="metric-card">
+    <span class="metric-card__label">Last Scan</span>
+    <strong class="metric-card__value" id="captures-last-scan">Waiting</strong>
+    <span class="metric-card__meta">Dashboard filesystem refresh time</span>
+  </article>
+  <article class="metric-card">
+    <span class="metric-card__label">Stored Size</span>
+    <strong class="metric-card__value" id="captures-total-size">0 B</strong>
+    <span class="metric-card__meta">Across all discovered pcap files</span>
+  </article>
+</section>
+
+<section class="panel">
+  <div class="panel__header">
+    <div>
+      <h2>Preserved Alert Snapshots</h2>
+      <p>Snapshots copied automatically when threshold or ML detections occur.</p>
+    </div>
+  </div>
+  <div class="table-shell">
+    <table class="data-table">
+      <thead>
+        <tr>
+          <th>Snapshot</th>
+          <th>Timestamp</th>
+          <th>Source IP</th>
+          <th>Detector</th>
+          <th>Alert Type</th>
+          <th>Files</th>
+          <th>Size</th>
+          <th>Status</th>
+          <th>Download</th>
+        </tr>
+      </thead>
+      <tbody id="captures-session-table"></tbody>
+    </table>
+  </div>
+</section>
+
+<section class="panel">
+    <div class="panel__header">
+      <div>
+      <h2>Rolling Capture Files</h2>
+      <p>Current background ring-buffer evidence used to preserve alert snapshots.</p>
+      </div>
+    </div>
+  <div class="table-shell">
+    <table class="data-table">
+      <thead>
+        <tr>
+          <th>Capture Type</th>
+          <th>Scenario</th>
+          <th>Interface</th>
+          <th>File</th>
+          <th>Status</th>
+          <th>Size</th>
+          <th>Modified</th>
+          <th>Download</th>
+        </tr>
+      </thead>
+      <tbody id="captures-file-table"></tbody>
+    </table>
+  </div>
+</section>
+{% endblock %}

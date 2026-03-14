@@ -1,0 +1,51 @@
+{% extends "base.html" %}
+
+{% block content %}
+<section class="card-grid card-grid--metrics">
+  <article class="metric-card metric-card--danger">
+    <span class="metric-card__label">Active Quarantines</span>
+    <strong class="metric-card__value" id="blocked-total">0</strong>
+    <span class="metric-card__meta">Administrative holds awaiting analyst review</span>
+  </article>
+  <article class="metric-card">
+    <span class="metric-card__label">Threshold Quarantines</span>
+    <strong class="metric-card__value" id="blocked-threshold">0</strong>
+    <span class="metric-card__meta">Installed by baseline IDS or firewall rules</span>
+  </article>
+  <article class="metric-card">
+    <span class="metric-card__label">ML Quarantines</span>
+    <strong class="metric-card__value" id="blocked-ml">0</strong>
+    <span class="metric-card__meta">Installed by hybrid or ML-only policy</span>
+  </article>
+  <article class="metric-card">
+    <span class="metric-card__label">Manual Unblocks</span>
+    <strong class="metric-card__value" id="blocked-manual-unblocks">0</strong>
+    <span class="metric-card__meta">Analyst releases completed</span>
+  </article>
+</section>
+
+<section class="panel">
+  <div class="panel__header">
+    <div>
+      <h2>Quarantine Registry</h2>
+      <p>Who is quarantined, why, and which preserved evidence file supports the decision.</p>
+    </div>
+  </div>
+  <div class="table-shell">
+    <table class="data-table">
+      <thead>
+        <tr>
+          <th>Source IP</th>
+          <th>Detector</th>
+          <th>Alert Type</th>
+          <th>Reason</th>
+          <th>Blocked</th>
+          <th>Evidence</th>
+          <th>Action</th>
+        </tr>
+      </thead>
+      <tbody id="blocked-hosts-table"></tbody>
+    </table>
+  </div>
+</section>
+{% endblock %}

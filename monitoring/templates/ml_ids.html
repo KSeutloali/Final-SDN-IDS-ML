@@ -1,0 +1,136 @@
+{% extends "base.html" %}
+
+{% block content %}
+<section class="card-grid card-grid--metrics">
+  <article class="metric-card">
+    <span class="metric-card__label">Effective Mode</span>
+    <strong class="metric-card__value" id="ml-effective-mode">threshold_only</strong>
+    <span class="metric-card__meta" id="ml-hybrid-policy">alert_only</span>
+  </article>
+  <article class="metric-card">
+    <span class="metric-card__label">Model Loaded</span>
+    <strong class="metric-card__value" id="ml-model-status">No</strong>
+    <span class="metric-card__meta" id="ml-model-path">-</span>
+  </article>
+  <article class="metric-card">
+    <span class="metric-card__label">Predictions</span>
+    <strong class="metric-card__value" id="ml-predictions-total">0</strong>
+    <span class="metric-card__meta" id="ml-prediction-split">0 malicious / 0 benign</span>
+  </article>
+  <article class="metric-card">
+    <span class="metric-card__label">ML Alerts</span>
+    <strong class="metric-card__value" id="ml-alert-count">0</strong>
+    <span class="metric-card__meta" id="ml-agreement-count">0 hybrid agreements</span>
+  </article>
+  <article class="metric-card metric-card--danger">
+    <span class="metric-card__label">Hybrid Disagreements</span>
+    <strong class="metric-card__value" id="ml-disagreement-count">0</strong>
+    <span class="metric-card__meta" id="ml-agreement-rate">0.0% agreement rate</span>
+  </article>
+  <article class="metric-card">
+    <span class="metric-card__label">Threshold-Only</span>
+    <strong class="metric-card__value" id="ml-threshold-only-count">0</strong>
+    <span class="metric-card__meta">Threshold alerts without ML confirmation</span>
+  </article>
+  <article class="metric-card">
+    <span class="metric-card__label">ML-Only</span>
+    <strong class="metric-card__value" id="ml-only-count">0</strong>
+    <span class="metric-card__meta">ML alerts without threshold confirmation</span>
+  </article>
+</section>
+
+<section class="panel-grid panel-grid--wide">
+  <article class="panel">
+    <div class="panel__header">
+      <div>
+        <h2>ML Confidence Trend</h2>
+        <p>Recent prediction confidence and suspicion score samples.</p>
+      </div>
+    </div>
+    <div class="chart-shell">
+      <canvas id="chart-ml-confidence"></canvas>
+    </div>
+  </article>
+  <article class="panel">
+    <div class="panel__header">
+      <div>
+        <h2>ML Alert Trend</h2>
+        <p>ML detections and hybrid agreements over the live time series.</p>
+      </div>
+    </div>
+    <div class="chart-shell">
+      <canvas id="chart-ml-alerts"></canvas>
+    </div>
+  </article>
+</section>
+
+<section class="panel-grid panel-grid--split">
+  <article class="panel">
+    <div class="panel__header">
+      <div>
+        <h2>Hybrid Correlation</h2>
+        <p>Agreement, disagreement, and single-detector outcomes within the correlation window.</p>
+      </div>
+    </div>
+    <div class="table-shell">
+      <table class="data-table">
+        <thead>
+          <tr>
+            <th>Time</th>
+            <th>Source</th>
+            <th>Status</th>
+            <th>Confidence</th>
+            <th>Reason</th>
+          </tr>
+        </thead>
+        <tbody id="ml-hybrid-table"></tbody>
+      </table>
+    </div>
+  </article>
+  <article class="panel">
+    <div class="panel__header">
+      <div>
+        <h2>Recent ML Alerts</h2>
+        <p>Inference alerts that crossed the configured malicious threshold.</p>
+      </div>
+    </div>
+    <div class="table-shell">
+      <table class="data-table">
+        <thead>
+          <tr>
+            <th>Time</th>
+            <th>Source</th>
+            <th>Confidence</th>
+            <th>Decision</th>
+            <th>Reason</th>
+          </tr>
+        </thead>
+        <tbody id="ml-alerts-table"></tbody>
+      </table>
+    </div>
+  </article>
+</section>
+
+<section class="panel">
+  <div class="panel__header">
+    <div>
+      <h2>Recent Predictions</h2>
+      <p>Latest prediction samples recorded by the ML runtime path.</p>
+    </div>
+  </div>
+  <div class="table-shell">
+    <table class="data-table">
+      <thead>
+        <tr>
+          <th>Source</th>
+          <th>Label</th>
+          <th>Confidence</th>
+          <th>Suspicion</th>
+          <th>Classification</th>
+        </tr>
+      </thead>
+      <tbody id="ml-predictions-table"></tbody>
+    </table>
+  </div>
+</section>
+{% endblock %}

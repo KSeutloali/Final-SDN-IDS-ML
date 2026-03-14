@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+.pytest_cache/
+.mypy_cache/
+logs/*.log
+captures/output/*.pcap
+captures/output/*.pcapng
+.git

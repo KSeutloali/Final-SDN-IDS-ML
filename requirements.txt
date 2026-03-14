@@ -1,0 +1,6 @@
+# These pins are intentionally aligned with the provided Dockerfile.
+# Ryu itself should continue to be installed from the official v4.30 tag.
+eventlet==0.29.0
+setuptools==57.5.0
+Flask==2.2.5
+Werkzeug==2.2.3

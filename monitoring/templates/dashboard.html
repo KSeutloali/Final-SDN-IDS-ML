@@ -1,0 +1,120 @@
+{% extends "base.html" %}
+
+{% block content %}
+<section class="card-grid card-grid--metrics">
+  <article class="metric-card">
+    <span class="metric-card__label">Packets Processed</span>
+    <strong class="metric-card__value" id="stat-total-packets">0</strong>
+    <span class="metric-card__meta" id="stat-packet-rate">0 pkt/s</span>
+  </article>
+  <article class="metric-card">
+    <span class="metric-card__label">Active Switches</span>
+    <strong class="metric-card__value" id="stat-active-switches">0</strong>
+    <span class="metric-card__meta">OpenFlow 1.3 datapaths</span>
+  </article>
+  <article class="metric-card">
+    <span class="metric-card__label">Learned Hosts</span>
+    <strong class="metric-card__value" id="stat-active-hosts">0</strong>
+    <span class="metric-card__meta">Visible to controller</span>
+  </article>
+  <article class="metric-card metric-card--danger">
+    <span class="metric-card__label">Blocked Hosts</span>
+    <strong class="metric-card__value" id="stat-active-blocks">0</strong>
+    <span class="metric-card__meta" id="stat-alert-total">0 alerts total</span>
+  </article>
+</section>
+
+<section class="panel-grid panel-grid--wide">
+  <article class="panel">
+    <div class="panel__header">
+      <div>
+        <h2>Packets Over Time</h2>
+        <p>Continuous view of controller-observed traffic volume.</p>
+      </div>
+    </div>
+    <div class="chart-shell">
+      <canvas id="chart-overview-packets"></canvas>
+    </div>
+  </article>
+  <article class="panel">
+    <div class="panel__header">
+      <div>
+        <h2>Alerts and Blocks</h2>
+        <p>Threshold and ML activity with mitigation trend lines.</p>
+      </div>
+    </div>
+    <div class="chart-shell">
+      <canvas id="chart-overview-alerts"></canvas>
+    </div>
+  </article>
+</section>
+
+<section class="panel-grid panel-grid--split">
+  <article class="panel">
+    <div class="panel__header">
+      <div>
+        <h2>Protocol Mix</h2>
+        <p>Current protocol distribution from live packet counters.</p>
+      </div>
+    </div>
+    <div class="chart-shell chart-shell--compact">
+      <canvas id="chart-overview-protocols"></canvas>
+    </div>
+  </article>
+  <article class="panel">
+    <div class="panel__header">
+      <div>
+        <h2>Recent Security Events</h2>
+        <p>Newest alerts, blocks, and expiries without refreshing the page.</p>
+      </div>
+    </div>
+    <div class="table-shell">
+      <table class="data-table">
+        <thead>
+          <tr>
+            <th>Time</th>
+            <th>Type</th>
+            <th>Detector</th>
+            <th>Source</th>
+            <th>Reason</th>
+          </tr>
+        </thead>
+        <tbody id="overview-alerts-table"></tbody>
+      </table>
+    </div>
+  </article>
+</section>
+
+<section class="panel-grid panel-grid--split">
+  <article class="panel">
+    <div class="panel__header">
+      <div>
+        <h2>Blocked Hosts</h2>
+        <p>Current temporary blocks installed by threshold or ML logic.</p>
+      </div>
+    </div>
+    <div class="table-shell">
+      <table class="data-table">
+        <thead>
+          <tr>
+            <th>IP</th>
+            <th>Detector</th>
+            <th>Reason</th>
+            <th>Expires</th>
+          </tr>
+        </thead>
+        <tbody id="overview-blocked-table"></tbody>
+      </table>
+    </div>
+  </article>
+  <article class="panel">
+    <div class="panel__header">
+      <div>
+        <h2>Network Inventory</h2>
+        <p>Currently connected switches and recently learned hosts.</p>
+      </div>
+    </div>
+    <div class="stacked-list" id="overview-inventory"></div>
+  </article>
+</section>
+{% endblock %}

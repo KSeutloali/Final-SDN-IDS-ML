@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+
+{% block content %}
+<section class="panel-grid panel-grid--split">
+  <article class="panel">
+    <div class="panel__header">
+      <div>
+        <h2>Threshold IDS Configuration</h2>
+        <p>Active thresholds, windows, and suppression values from the controller.</p>
+      </div>
+    </div>
+    <div class="kv-grid" id="settings-ids-grid"></div>
+  </article>
+  <article class="panel">
+    <div class="panel__header">
+      <div>
+        <h2>Firewall and Block Policy</h2>
+        <p>Core firewall rules and dynamic mitigation duration settings.</p>
+      </div>
+    </div>
+    <div class="kv-grid" id="settings-firewall-grid"></div>
+  </article>
+</section>
+
+<section class="panel-grid panel-grid--split">
+  <article class="panel">
+    <div class="panel__header">
+      <div>
+        <h2>ML Runtime Settings</h2>
+        <p>Configured mode, thresholds, and model path used by the controller.</p>
+      </div>
+    </div>
+    <div class="kv-grid" id="settings-ml-grid"></div>
+  </article>
+  <article class="panel">
+    <div class="panel__header">
+      <div>
+        <h2>Dashboard and Controller Settings</h2>
+        <p>Runtime values relevant to the monitoring service and OpenFlow listener.</p>
+      </div>
+    </div>
+    <div class="kv-grid" id="settings-dashboard-grid"></div>
+  </article>
+</section>
+{% endblock %}

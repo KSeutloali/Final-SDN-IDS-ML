@@ -1,0 +1,90 @@
+{% extends "base.html" %}
+
+{% block content %}
+<section class="card-grid card-grid--metrics">
+  <article class="metric-card">
+    <span class="metric-card__label">PacketIn Rate</span>
+    <strong class="metric-card__value" id="perf-packet-rate">0 pkt/s</strong>
+    <span class="metric-card__meta">Controller-observed ingress pace</span>
+  </article>
+  <article class="metric-card">
+    <span class="metric-card__label">Flow Install Rate</span>
+    <strong class="metric-card__value" id="perf-flow-rate">0 flow/s</strong>
+    <span class="metric-card__meta">Derived from recent flow event deltas</span>
+  </article>
+  <article class="metric-card">
+    <span class="metric-card__label">Controller Event Rate</span>
+    <strong class="metric-card__value" id="perf-event-rate">0 evt/s</strong>
+    <span class="metric-card__meta">Switch and lifecycle event processing</span>
+  </article>
+  <article class="metric-card">
+    <span class="metric-card__label">Flow Removals</span>
+    <strong class="metric-card__value" id="perf-flow-removals">0</strong>
+    <span class="metric-card__meta">Timeout and delete events from switches</span>
+  </article>
+  <article class="metric-card metric-card--danger">
+    <span class="metric-card__label">Active Security Flows</span>
+    <strong class="metric-card__value" id="perf-active-security-flows">0</strong>
+    <span class="metric-card__meta">Drop and mitigation flows currently active</span>
+  </article>
+  <article class="metric-card">
+    <span class="metric-card__label">Active Flow Count</span>
+    <strong class="metric-card__value" id="perf-active-flows">0</strong>
+    <span class="metric-card__meta">Tracked forwarding and security flow entries</span>
+  </article>
+  <article class="metric-card metric-card--warning">
+    <span class="metric-card__label">Active Blocked Hosts</span>
+    <strong class="metric-card__value" id="perf-active-blocks">0</strong>
+    <span class="metric-card__meta">Temporary source blocks still in force</span>
+  </article>
+</section>
+
+<section class="panel-grid panel-grid--wide">
+  <article class="panel">
+    <div class="panel__header">
+      <div>
+        <h2>Controller Throughput</h2>
+        <p>Packet and event handling rates derived from the shared state stream.</p>
+      </div>
+    </div>
+    <div class="chart-shell">
+      <canvas id="chart-performance-rates"></canvas>
+    </div>
+  </article>
+  <article class="panel">
+    <div class="panel__header">
+      <div>
+        <h2>Flow Activity</h2>
+        <p>Installed flows, removals, active security flows, and blocked hosts over time.</p>
+      </div>
+    </div>
+    <div class="chart-shell">
+      <canvas id="chart-performance-flows"></canvas>
+    </div>
+  </article>
+</section>
+
+<section class="panel">
+  <div class="panel__header">
+    <div>
+      <h2>Controller Activity Feed</h2>
+      <p>Recent datapath, baseline, and flow events from the controller.</p>
+    </div>
+  </div>
+  <div class="table-shell">
+    <table class="data-table">
+      <thead>
+        <tr>
+          <th>Time</th>
+          <th>Category</th>
+          <th>Event</th>
+          <th>DPID</th>
+          <th>Reason</th>
+          <th>Priority</th>
+        </tr>
+      </thead>
+      <tbody id="performance-activity-table"></tbody>
+    </table>
+  </div>
+</section>
+{% endblock %}

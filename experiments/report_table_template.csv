@@ -1,0 +1,14 @@
+Mode,Scenario,Runs,Attack Detection Rate,Mean Detection Time (s),Mean Mitigation Time (s),Mean Packets Processed,Mean Packet Drops Observed,Mean Flow Installs,Mean Flow Removals,Mean Controller Events,Mean Observed Throughput (bytes/s),Mean Ping RTT (ms),False Positive Rate,False Negative Rate,Notes
+SDN Dynamic Firewall/IDS Enforcement,Benign,,,,,,,,,,,,,
+SDN Dynamic Firewall/IDS Enforcement,Port Scan,,,,,,,,,,,,,
+SDN Dynamic Firewall/IDS Enforcement,DoS / SYN Flood,,,,,,,,,,,,,
+Traditional Static Firewall,Benign,,,,,,,,,,,,,
+Traditional Static Firewall,Port Scan,,,,,,,,,,,,,
+Traditional Static Firewall,DoS / SYN Flood,,,,,,,,,,,,,
+Threshold-Based IDS,Benign,,,,,,,,,,,,,
+Threshold-Based IDS,Port Scan,,,,,,,,,,,,,
+Threshold-Based IDS,DoS / SYN Flood,,,,,,,,,,,,,
+ML-Enhanced IDS,Benign,,,,,,,,,,,,,
+ML-Enhanced IDS,Port Scan,,,,,,,,,,,,,
+ML-Enhanced IDS,DoS / SYN Flood,,,,,,,,,,,,,
+

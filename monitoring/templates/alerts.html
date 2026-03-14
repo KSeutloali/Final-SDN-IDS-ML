@@ -1,0 +1,52 @@
+{% extends "base.html" %}
+
+{% block content %}
+<section class="card-grid card-grid--metrics">
+  <article class="metric-card">
+    <span class="metric-card__label">Total Alerts</span>
+    <strong class="metric-card__value" id="alerts-total">0</strong>
+    <span class="metric-card__meta">Threshold and ML combined</span>
+  </article>
+  <article class="metric-card metric-card--warning">
+    <span class="metric-card__label">Threshold Alerts</span>
+    <strong class="metric-card__value" id="alerts-threshold">0</strong>
+    <span class="metric-card__meta">Rules triggered by baseline IDS</span>
+  </article>
+  <article class="metric-card metric-card--info">
+    <span class="metric-card__label">ML Alerts</span>
+    <strong class="metric-card__value" id="alerts-ml">0</strong>
+    <span class="metric-card__meta">Inference-driven detections</span>
+  </article>
+  <article class="metric-card metric-card--danger">
+    <span class="metric-card__label">Critical Alerts</span>
+    <strong class="metric-card__value" id="alerts-critical">0</strong>
+    <span class="metric-card__meta">High-confidence or confirmed attacks</span>
+  </article>
+</section>
+
+<section class="panel">
+  <div class="panel__header">
+    <div>
+      <h2>Live Alert Stream</h2>
+      <p>Updates continuously as threshold IDS, hybrid logic, and mitigations fire.</p>
+    </div>
+  </div>
+  <div class="table-shell">
+    <table class="data-table">
+      <thead>
+        <tr>
+          <th>Time</th>
+          <th>Severity</th>
+          <th>Alert Type</th>
+          <th>Detector</th>
+          <th>Source IP</th>
+          <th>Reason</th>
+          <th>Quarantine</th>
+          <th>Evidence</th>
+        </tr>
+      </thead>
+      <tbody id="alerts-table"></tbody>
+    </table>
+  </div>
+</section>
+{% endblock %}

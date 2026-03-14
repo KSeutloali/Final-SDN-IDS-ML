@@ -1,0 +1,67 @@
+services:
+  controller:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: sdn-security-controller:latest
+    container_name: sdn-security-controller
+    ports:
+      - "${SDN_OPENFLOW_PORT_HOST:-6633}:6633"
+    environment:
+      SDN_LOG_LEVEL: "INFO"
+      SDN_ML_ENABLED: "${SDN_ML_ENABLED:-false}"
+      SDN_ML_MODE: "${SDN_ML_MODE:-threshold_only}"
+      SDN_ML_HYBRID_POLICY: "${SDN_ML_HYBRID_POLICY:-alert_only}"
+      SDN_ML_MODEL_PATH: "${SDN_ML_MODEL_PATH:-models/random_forest_ids.joblib}"
+      SDN_ML_DATASET_RECORDING_ENABLED: "${SDN_ML_DATASET_RECORDING_ENABLED:-false}"
+      SDN_ML_DATASET_RECORDING_PATH: "${SDN_ML_DATASET_RECORDING_PATH:-runtime/ml_dataset.jsonl}"
+      SDN_ML_DATASET_LABEL_PATH: "${SDN_ML_DATASET_LABEL_PATH:-runtime/dataset_label.json}"
+      SDN_ML_DATASET_RECORD_UNLABELED: "${SDN_ML_DATASET_RECORD_UNLABELED:-false}"
+      SDN_ML_DATASET_DISABLE_MITIGATION: "${SDN_ML_DATASET_DISABLE_MITIGATION:-false}"
+      SDN_ML_CONFIDENCE_THRESHOLD: "${SDN_ML_CONFIDENCE_THRESHOLD:-0.75}"
+      SDN_ML_MITIGATION_THRESHOLD: "${SDN_ML_MITIGATION_THRESHOLD:-0.92}"
+    volumes:
+      - .:/ryu-apps
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+    restart: unless-stopped
+
+  dashboard:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: sdn-security-controller:latest
+    container_name: sdn-security-dashboard
+    command: ["python", "-m", "monitoring.webapp"]
+    ports:
+      - "${SDN_DASHBOARD_PORT_HOST:-8080}:8080"
+    environment:
+      SDN_DASHBOARD_HOST: "0.0.0.0"
+      SDN_DASHBOARD_PORT: "8080"
+    depends_on:
+      - controller
+    volumes:
+      - .:/ryu-apps
+    restart: unless-stopped
+
+  mininet:
+    build:
+      context: .
+      dockerfile: Dockerfile.mininet
+    image: sdn-security-mininet:latest
+    container_name: sdn-security-mininet
+    privileged: true
+    tty: true
+    stdin_open: true
+    depends_on:
+      - controller
+    working_dir: /workspace/ryu-apps
+    environment:
+      SDN_CONTROLLER_IP: "controller"
+      SDN_CONTROLLER_PORT: "6633"
+      SDN_MININET_SWITCH_MODE: "user"
+    volumes:
+      - .:/workspace/ryu-apps
+      - /lib/modules:/lib/modules:ro
+    command: ["sleep", "infinity"]

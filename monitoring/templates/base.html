@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{{ page_title }} · {{ dashboard_title }}</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='styles.css', v='20260313b') }}">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js" defer></script>
+    <script src="{{ url_for('static', filename='dashboard.js', v='20260313b') }}" defer></script>
+  </head>
+  <body
+    data-base-path="{{ base_path }}"
+    data-poll-interval-ms="{{ poll_interval_ms }}"
+    data-page="{{ page_name }}"
+    data-api-endpoint="{{ page_api }}"
+  >
+    <div class="app-shell">
+      <aside class="sidebar" id="sidebar">
+        <div class="sidebar__brand">
+          <div class="brand-mark">SDN</div>
+          <div>
+            <div class="brand-title">{{ dashboard_title }}</div>
+            <div class="brand-subtitle">Security Analytics Console</div>
+          </div>
+        </div>
+        <nav class="sidebar__nav" aria-label="Dashboard navigation">
+          {% for item in navigation_items %}
+          <a
+            class="nav-link{% if item.name == page_name %} is-active{% endif %}"
+            href="{{ item.href }}"
+          >
+            <span class="nav-link__label">{{ item.label }}</span>
+          </a>
+          {% endfor %}
+        </nav>
+        <div class="sidebar__footer">
+          <div class="status-chip" id="sidebar-live-chip">Waiting for data</div>
+          <div class="sidebar__hint">Polling every {{ (poll_interval_ms / 1000)|round(1) }}s</div>
+        </div>
+      </aside>
+
+      <div class="app-main">
+        <header class="topbar">
+          <div class="topbar__left">
+            <div>
+              <div class="eyebrow">Live monitoring</div>
+              <h1>{{ page_title }}</h1>
+              <p class="page-intro">{{ page_description }}</p>
+            </div>
+          </div>
+          <div class="topbar__right">
+            <div class="topbar-stat">
+              <span class="topbar-stat__label">Mode</span>
+              <span class="badge badge--info" id="chrome-ml-mode">threshold_only</span>
+            </div>
+            <div class="topbar-stat">
+              <span class="topbar-stat__label">Last update</span>
+              <span class="topbar-stat__value" id="chrome-last-updated">Waiting</span>
+            </div>
+            <div class="topbar-stat">
+              <span class="topbar-stat__label">Connection</span>
+              <span class="badge badge--warning" id="chrome-live-status">Connecting</span>
+            </div>
+          </div>
+        </header>
+
+        <main class="content" id="page-content">
+          {% block content %}{% endblock %}
+        </main>
+
+        <footer class="statusbar">
+          <div class="statusbar__item">
+            <span class="statusbar__label">Packets</span>
+            <span class="statusbar__value" id="footer-total-packets">0</span>
+          </div>
+          <div class="statusbar__item">
+            <span class="statusbar__label">Switches</span>
+            <span class="statusbar__value" id="footer-switches">0</span>
+          </div>
+          <div class="statusbar__item">
+            <span class="statusbar__label">Alerts</span>
+            <span class="statusbar__value" id="footer-alerts">0</span>
+          </div>
+          <div class="statusbar__item">
+            <span class="statusbar__label">Blocks</span>
+            <span class="statusbar__value" id="footer-blocks">0</span>
+          </div>
+          <div class="statusbar__item">
+            <span class="statusbar__label">State file</span>
+            <span class="statusbar__value">runtime/dashboard_state.json</span>
+          </div>
+        </footer>
+      </div>
+    </div>
+  </body>
+</html>
