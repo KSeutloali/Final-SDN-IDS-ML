@@ -4,9 +4,10 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>{{ page_title }} · {{ dashboard_title }}</title>
-    <link rel="stylesheet" href="{{ url_for('static', filename='styles.css', v='20260313b') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='styles.css', v='20260319b') }}">
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js" defer></script>
-    <script src="{{ url_for('static', filename='dashboard.js', v='20260313b') }}" defer></script>
+    <script src="{{ url_for('static', filename='chart-fallback.js', v='20260319b') }}" defer></script>
+    <script src="{{ url_for('static', filename='dashboard.js', v='20260319b') }}" defer></script>
   </head>
   <body
     data-base-path="{{ base_path }}"
@@ -51,7 +52,7 @@
           <div class="topbar__right">
             <div class="topbar-stat">
               <span class="topbar-stat__label">Mode</span>
-              <span class="badge badge--info" id="chrome-ml-mode">threshold_only</span>
+              <span class="badge badge--info" id="chrome-ml-mode">Threshold IDS</span>
             </div>
             <div class="topbar-stat">
               <span class="topbar-stat__label">Last update</span>

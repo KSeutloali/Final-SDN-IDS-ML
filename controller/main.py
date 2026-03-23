@@ -17,6 +17,7 @@ from ryu.ofproto import ofproto_v1_3
 from config.settings import load_config
 from controller.events import (
     ControllerState,
+    clear_runtime_topology_state,
     format_dpid,
     learn_host,
     lookup_output_port,
@@ -25,6 +26,7 @@ from controller.events import (
 )
 from core.command_queue import ControllerCommandQueue
 from core.flow_manager import FlowManager
+from core.ids_mode import IDSModeStateStore
 from core.packet_parser import PacketParser
 from monitoring.logger import StructuredLogger, configure_logger
 from monitoring.metrics import MetricsStore
@@ -67,10 +69,12 @@ class SecurityController(app_manager.RyuApp):
         self.command_queue = ControllerCommandQueue()
         self.ids = ThresholdIDS(self.config.ids)
         self.ml_pipeline = MLIDSPipeline(self.config.ml)
+        self.ids_mode_store = IDSModeStateStore(self.config.ml.mode_state_path)
         self.dataset_recorder = RuntimeDatasetRecorder(self.config.ml)
         self.capture_manager = PacketCaptureManager(
             self.config.capture,
             logger=base_logger,
+            manage_workers=False,
         )
         self.mitigation = MitigationService(
             firewall=self.firewall,
@@ -78,15 +82,32 @@ class SecurityController(app_manager.RyuApp):
             event_logger=self.event_logger,
             default_block_seconds=self.config.firewall.dynamic_block_duration_seconds,
         )
+        restored_mode = self.ids_mode_store.current_mode(
+            default=self.ml_pipeline.status().get("selected_mode_api", "threshold"),
+        )
+        restore_result = self.ml_pipeline.set_mode(restored_mode)
+        self._persist_ids_mode_state(
+            requested_by="controller_startup",
+            previous_mode=restore_result.get("previous_mode_api"),
+        )
         self.event_logger.controller_event(
             "controller_started",
             reason="firewall_ids_controller_ready",
         )
         self.event_logger.controller_event(
+            "ids_mode_ready",
+            reason="runtime_ids_mode_initialized",
+            configured_mode=self.ml_pipeline.status().get("configured_mode_api"),
+            selected_mode=self.ml_pipeline.status().get("selected_mode_api"),
+            effective_mode=self.ml_pipeline.status().get("effective_mode_api"),
+            model_available=self.ml_pipeline.status().get("model_available"),
+        )
+        self.event_logger.controller_event(
             "ml_pipeline_ready",
             reason=self.ml_pipeline.status().get("model_error") or "ml_runtime_initialized",
-            configured_mode=self.ml_pipeline.status().get("configured_mode"),
-            effective_mode=self.ml_pipeline.status().get("effective_mode"),
+            configured_mode=self.ml_pipeline.status().get("configured_mode_api"),
+            selected_mode=self.ml_pipeline.status().get("selected_mode_api"),
+            effective_mode=self.ml_pipeline.status().get("effective_mode_api"),
             hybrid_policy=self.ml_pipeline.status().get("hybrid_policy"),
             model_available=self.ml_pipeline.status().get("model_available"),
             model_path=self.ml_pipeline.status().get("model_path"),
@@ -127,12 +148,15 @@ class SecurityController(app_manager.RyuApp):
             self._publish_dashboard_state(force=True)
         elif event.state == DEAD_DISPATCHER:
             unregister_datapath(self.state, datapath.id)
-            self.metrics.record_controller_event("datapath_down", {"dpid": dpid})
-            self.event_logger.controller_event(
-                "datapath_down",
-                dpid=dpid,
-                reason="switch_disconnected",
-            )
+            if self.state.datapaths:
+                self.metrics.record_controller_event("datapath_down", {"dpid": dpid})
+                self.event_logger.controller_event(
+                    "datapath_down",
+                    dpid=dpid,
+                    reason="switch_disconnected",
+                )
+            else:
+                self._reset_live_runtime_state(last_dpid=dpid)
             self._publish_dashboard_state(force=True)
 
     @set_ev_cls(ofp_event.EventOFPSwitchFeatures, CONFIG_DISPATCHER)
@@ -463,6 +487,23 @@ class SecurityController(app_manager.RyuApp):
             self._publish_dashboard_state()
             hub.sleep(heartbeat_interval)
 
+    def _reset_live_runtime_state(self, last_dpid):
+        clear_runtime_topology_state(self.state)
+        self.metrics.reset_runtime_session()
+        self.ml_pipeline.reset_runtime_session()
+        self.metrics.record_controller_event(
+            "topology_idle",
+            {
+                "last_dpid": last_dpid,
+                "reason": "all_switches_disconnected",
+            },
+        )
+        self.event_logger.controller_event(
+            "topology_idle",
+            dpid=last_dpid,
+            reason="all_switches_disconnected",
+        )
+
     def _should_suppress_dataset_collection_mitigation(self):
         if not self.config.ml.dataset_disable_mitigation:
             return False
@@ -484,55 +525,121 @@ class SecurityController(app_manager.RyuApp):
         for command in self.command_queue.pending_commands():
             action = command.get("action")
             payload = dict(command.get("payload") or {})
-            if action != "unblock_host":
-                self.command_queue.mark_processed(
-                    command,
-                    status="ignored",
-                    result={"reason": "unsupported_action"},
-                )
+            if action == "unblock_host":
+                self._process_unblock_host_command(command, payload)
                 continue
-            src_ip = payload.get("src_ip")
-            if not src_ip:
-                self.command_queue.mark_processed(
-                    command,
-                    status="invalid",
-                    result={"reason": "missing_src_ip"},
-                )
+            if action == "set_ids_mode":
+                self._process_ids_mode_command(command, payload)
                 continue
-            mitigation = self.mitigation.manual_unblock(
-                src_ip,
-                self.state.iter_datapaths(),
-                released_by=payload.get("requested_by", "dashboard"),
+            self.command_queue.mark_processed(
+                command,
+                status="ignored",
+                result={"reason": "unsupported_action"},
             )
-            if mitigation is None:
-                self.event_logger.security_event(
-                    "manual_unblock_ignored",
-                    src_ip=src_ip,
-                    reason="host_not_quarantined",
-                )
-                self.command_queue.mark_processed(
-                    command,
-                    status="noop",
-                    result={"reason": "host_not_quarantined", "src_ip": src_ip},
-                )
-                continue
+
+    def _process_unblock_host_command(self, command, payload):
+        src_ip = payload.get("src_ip")
+        if not src_ip:
+            self.command_queue.mark_processed(
+                command,
+                status="invalid",
+                result={"reason": "missing_src_ip"},
+            )
+            return
+        mitigation = self.mitigation.manual_unblock(
+            src_ip,
+            self.state.iter_datapaths(),
+            released_by=payload.get("requested_by", "dashboard"),
+        )
+        if mitigation is None:
             self.event_logger.security_event(
-                "host_manually_unblocked",
-                src_ip=mitigation.src_ip,
-                reason=mitigation.reason,
-                released_by=payload.get("requested_by", "dashboard"),
-                related_capture=(
-                    mitigation.related_capture.get("primary_file")
-                    if mitigation.related_capture
-                    else None
-                ),
+                "manual_unblock_ignored",
+                src_ip=src_ip,
+                reason="host_not_quarantined",
             )
             self.command_queue.mark_processed(
                 command,
-                status="completed",
-                result={"src_ip": mitigation.src_ip},
+                status="noop",
+                result={"reason": "host_not_quarantined", "src_ip": src_ip},
+            )
+            return
+        self.event_logger.security_event(
+            "host_manually_unblocked",
+            src_ip=mitigation.src_ip,
+            reason=mitigation.reason,
+            released_by=payload.get("requested_by", "dashboard"),
+            related_capture=(
+                mitigation.related_capture.get("primary_file")
+                if mitigation.related_capture
+                else None
+            ),
+        )
+        self.command_queue.mark_processed(
+            command,
+            status="completed",
+            result={"src_ip": mitigation.src_ip},
+        )
+        self._publish_dashboard_state(force=True)
+
+    def _process_ids_mode_command(self, command, payload):
+        requested_mode = payload.get("mode")
+        if not requested_mode:
+            self.command_queue.mark_processed(
+                command,
+                status="invalid",
+                result={"reason": "missing_mode"},
+            )
+            return
+
+        selection_error = self.ml_pipeline.selection_error(requested_mode)
+        if selection_error is not None:
+            self.event_logger.controller_event(
+                "ids_mode_change_rejected",
+                reason=selection_error,
+                requested_mode=requested_mode,
+                current_mode=self.ml_pipeline.status().get("selected_mode_api"),
+            )
+            self.command_queue.mark_processed(
+                command,
+                status="rejected",
+                result={
+                    "reason": selection_error,
+                    "requested_mode": requested_mode,
+                    "current_mode": self.ml_pipeline.status().get("selected_mode_api"),
+                },
             )
             self._publish_dashboard_state(force=True)
+            return
+
+        change = self.ml_pipeline.set_mode(requested_mode)
+        self._persist_ids_mode_state(
+            requested_by=payload.get("requested_by", "dashboard"),
+            previous_mode=change.get("previous_mode_api"),
+        )
+
+        if change.get("changed"):
+            self.event_logger.controller_event(
+                "ids_mode_changed",
+                reason="runtime_mode_selector_update",
+                requested_by=payload.get("requested_by", "dashboard"),
+                previous_mode=change.get("previous_mode_api"),
+                selected_mode=change.get("selected_mode_api"),
+                effective_mode=change.get("effective_mode_api"),
+            )
+            status = "completed"
+        else:
+            status = "noop"
+
+        self.command_queue.mark_processed(
+            command,
+            status=status,
+            result={
+                "selected_mode": change.get("selected_mode_api"),
+                "effective_mode": change.get("effective_mode_api"),
+                "changed": bool(change.get("changed")),
+            },
+        )
+        self._publish_dashboard_state(force=True)
 
     def _preserve_capture_snapshot(self, alert, detector):
         snapshot = self.capture_manager.preserve_snapshot(
@@ -554,6 +661,14 @@ class SecurityController(app_manager.RyuApp):
                 file_count=snapshot.get("file_count"),
             )
         return snapshot
+
+    def _persist_ids_mode_state(self, requested_by, previous_mode=None):
+        return self.ids_mode_store.persist(
+            mode=self.ml_pipeline.status().get("selected_mode_api", "threshold"),
+            effective_mode=self.ml_pipeline.status().get("effective_mode_api", "threshold"),
+            requested_by=requested_by,
+            previous_mode=previous_mode,
+        )
 
     def _should_install_forward_flow(self, packet_metadata):
         """Install forwarding flows while still exposing new L4 tuples to the IDS."""
@@ -599,6 +714,17 @@ class SecurityController(app_manager.RyuApp):
                 "connection_attempt_window_seconds": self.config.ids.connection_attempt_window_seconds,
                 "alert_suppression_seconds": self.config.ids.alert_suppression_seconds,
             },
+            "ids_runtime": {
+                "configured_mode": self.ml_pipeline.status().get("configured_mode_api"),
+                "configured_mode_label": self.ml_pipeline.status().get("configured_mode_label"),
+                "selected_mode": self.ml_pipeline.status().get("selected_mode_api"),
+                "selected_mode_label": self.ml_pipeline.status().get("selected_mode_label"),
+                "effective_mode": self.ml_pipeline.status().get("effective_mode_api"),
+                "effective_mode_label": self.ml_pipeline.status().get("effective_mode_label"),
+                "available_modes": self.ml_pipeline.status().get("available_modes", []),
+                "hybrid_policy": self.ml_pipeline.status().get("hybrid_policy"),
+                "model_available": self.ml_pipeline.status().get("model_available"),
+            },
             "mitigation": {
                 "enabled": self.config.mitigation.enabled,
                 "quarantine_enabled": self.config.mitigation.quarantine_enabled,
@@ -623,6 +749,7 @@ class SecurityController(app_manager.RyuApp):
             "ml": {
                 "enabled": self.config.ml.enabled,
                 "mode": self.config.ml.mode,
+                "mode_state_path": self.config.ml.mode_state_path,
                 "hybrid_policy": self.config.ml.hybrid_policy,
                 "model_path": self.config.ml.model_path,
                 "dataset_path": self.config.ml.dataset_path,

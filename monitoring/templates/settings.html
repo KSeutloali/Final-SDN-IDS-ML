@@ -5,6 +5,50 @@
   <article class="panel">
     <div class="panel__header">
       <div>
+        <h2>Runtime IDS Mode</h2>
+        <p>Switch detection strategy live without restarting the controller.</p>
+      </div>
+    </div>
+    <div class="control-stack">
+      <label class="field" for="ids-mode-selector">
+        <span class="field__label">IDS Mode</span>
+        <select class="field__control js-ids-mode-selector" id="ids-mode-selector">
+          <option value="threshold">Threshold IDS</option>
+          <option value="ml">ML IDS</option>
+          <option value="hybrid">Hybrid</option>
+        </select>
+      </label>
+      <div class="mode-status-row">
+        <div class="mode-state">
+          <span class="field__label">Selected</span>
+          <strong id="ids-mode-selected">Threshold IDS</strong>
+        </div>
+        <div class="mode-state">
+          <span class="field__label">Effective</span>
+          <strong id="ids-mode-effective">Threshold IDS</strong>
+        </div>
+      </div>
+      <div class="mode-feedback mode-feedback--success" id="ids-mode-status">Ready</div>
+      <p class="form-hint" id="ids-mode-help">
+        Threshold IDS remains the baseline detector. ML and Hybrid depend on a loaded runtime model.
+      </p>
+    </div>
+  </article>
+  <article class="panel">
+    <div class="panel__header">
+      <div>
+        <h2>Runtime Mode State</h2>
+        <p>Selected mode, effective mode, and runtime ML availability.</p>
+      </div>
+    </div>
+    <div class="kv-grid" id="settings-runtime-grid"></div>
+  </article>
+</section>
+
+<section class="panel-grid panel-grid--split">
+  <article class="panel">
+    <div class="panel__header">
+      <div>
         <h2>Threshold IDS Configuration</h2>
         <p>Active thresholds, windows, and suppression values from the controller.</p>
       </div>
@@ -15,7 +59,7 @@
     <div class="panel__header">
       <div>
         <h2>Firewall and Block Policy</h2>
-        <p>Core firewall rules and dynamic mitigation duration settings.</p>
+        <p>Core firewall rules, quarantine behavior, and analyst release settings.</p>
       </div>
     </div>
     <div class="kv-grid" id="settings-firewall-grid"></div>
@@ -27,7 +71,7 @@
     <div class="panel__header">
       <div>
         <h2>ML Runtime Settings</h2>
-        <p>Configured mode, thresholds, and model path used by the controller.</p>
+        <p>Configured mode defaults, thresholds, and model path used by the controller.</p>
       </div>
     </div>
     <div class="kv-grid" id="settings-ml-grid"></div>

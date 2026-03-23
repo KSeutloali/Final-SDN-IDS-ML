@@ -50,6 +50,25 @@ class ControllerCommandQueue(object):
             command["__path__"] = command_path
             yield command
 
+    def get_status(self, command_id):
+        if not command_id:
+            return None
+
+        for directory, default_status in (
+            (self.processed_path, "processed"),
+            (self.pending_path, "pending"),
+        ):
+            command_path = directory / ("%s.json" % command_id)
+            if not command_path.exists():
+                continue
+            try:
+                command = json.loads(command_path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                return None
+            command.setdefault("status", default_status)
+            return command
+        return None
+
     def mark_processed(self, command, status, result=None):
         command_id = command.get("command_id") or uuid.uuid4().hex
         archived = dict(command)
@@ -67,4 +86,3 @@ class ControllerCommandQueue(object):
                 source_path.unlink()
             except OSError:
                 pass
-

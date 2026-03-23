@@ -2,6 +2,12 @@
 
 from dataclasses import dataclass, field
 
+from core.ids_mode import (
+    ids_mode_label,
+    ids_mode_options,
+    normalize_ids_mode_internal,
+    normalize_ids_mode_public,
+)
 from ml.feature_extractor import LiveFeatureExtractor, RUNTIME_FEATURE_NAMES
 from ml.inference import ModelInferenceEngine
 from ml.model_loader import load_model
@@ -77,7 +83,8 @@ class MLIDSPipeline(object):
 
     def __init__(self, ml_config):
         self.ml_config = ml_config
-        self.mode = self._validated_mode(ml_config.mode)
+        self.default_mode = self._validated_mode(ml_config.mode)
+        self.mode = self.default_mode
         self.hybrid_policy = self._validated_hybrid_policy(ml_config.hybrid_policy)
         self.feature_extractor = LiveFeatureExtractor(ml_config)
         self.model_bundle = load_model(
@@ -95,7 +102,7 @@ class MLIDSPipeline(object):
         self.recent_prediction_state = {}
 
     def effective_mode(self):
-        if not self.ml_config.enabled or self.mode == "threshold_only":
+        if self.mode == "threshold_only":
             return "threshold_only"
         if not self.inference_engine.is_available:
             return "threshold_only"
@@ -104,12 +111,53 @@ class MLIDSPipeline(object):
     def status(self):
         effective_mode = self.effective_mode()
         return {
-            "configured_mode": self.mode,
+            "configured_mode": self.default_mode,
+            "configured_mode_api": normalize_ids_mode_public(self.default_mode),
+            "configured_mode_label": ids_mode_label(self.default_mode),
+            "selected_mode": self.mode,
+            "selected_mode_api": normalize_ids_mode_public(self.mode),
+            "selected_mode_label": ids_mode_label(self.mode),
             "effective_mode": effective_mode,
+            "effective_mode_api": normalize_ids_mode_public(effective_mode),
+            "effective_mode_label": ids_mode_label(effective_mode),
             "hybrid_policy": self.hybrid_policy,
             "model_available": self.inference_engine.is_available,
             "model_path": self.model_bundle.source_path or self.ml_config.model_path,
             "model_error": self.model_bundle.load_error,
+            "available_modes": ids_mode_options(),
+            "mode_state_path": getattr(self.ml_config, "mode_state_path", ""),
+        }
+
+    def selection_error(self, mode):
+        normalized_mode = self._validated_mode(mode)
+        if normalized_mode == "threshold_only":
+            return None
+        if not self.inference_engine.is_available:
+            return "model_unavailable"
+        return None
+
+    def set_mode(self, mode):
+        normalized_mode = self._validated_mode(mode)
+        previous_mode = self.mode
+        previous_effective_mode = self.effective_mode()
+        changed = normalized_mode != self.mode
+        self.mode = normalized_mode
+        if changed:
+            self._reset_runtime_mode_state()
+        effective_mode = self.effective_mode()
+        return {
+            "changed": changed,
+            "previous_mode": previous_mode,
+            "previous_mode_api": normalize_ids_mode_public(previous_mode),
+            "previous_mode_label": ids_mode_label(previous_mode),
+            "selected_mode": self.mode,
+            "selected_mode_api": normalize_ids_mode_public(self.mode),
+            "selected_mode_label": ids_mode_label(self.mode),
+            "previous_effective_mode": previous_effective_mode,
+            "previous_effective_mode_api": normalize_ids_mode_public(previous_effective_mode),
+            "effective_mode": effective_mode,
+            "effective_mode_api": normalize_ids_mode_public(effective_mode),
+            "effective_mode_label": ids_mode_label(effective_mode),
         }
 
     def inspect(self, packet_metadata, threshold_alerts=None):
@@ -224,10 +272,22 @@ class MLIDSPipeline(object):
                 float(prediction.feature_values.get("unique_destination_ips", 0.0)),
                 3,
             ),
+            "destination_port_fanout_ratio": round(
+                float(prediction.feature_values.get("destination_port_fanout_ratio", 0.0)),
+                6,
+            ),
             "syn_rate": round(float(prediction.feature_values.get("syn_rate", 0.0)), 6),
             "packet_rate": round(float(prediction.feature_values.get("packet_rate", 0.0)), 6),
             "failed_connection_rate": round(
                 float(prediction.feature_values.get("failed_connection_rate", 0.0)),
+                6,
+            ),
+            "unanswered_syn_rate": round(
+                float(prediction.feature_values.get("unanswered_syn_rate", 0.0)),
+                6,
+            ),
+            "unanswered_syn_ratio": round(
+                float(prediction.feature_values.get("unanswered_syn_ratio", 0.0)),
                 6,
             ),
             "observation_window_seconds": round(
@@ -446,6 +506,19 @@ class MLIDSPipeline(object):
             if (now - state.get("timestamp", 0.0)) > retention_window:
                 del self.recent_prediction_state[src_ip]
 
+    def _reset_runtime_mode_state(self):
+        self.pending_threshold_alerts.clear()
+        self.pending_ml_alerts.clear()
+        self.recent_prediction_state.clear()
+        self.last_alert_at.clear()
+        self.last_inference_at.clear()
+        self.last_inference_observation.clear()
+
+    def reset_runtime_session(self):
+        self.observed_packets.clear()
+        self._reset_runtime_mode_state()
+        self.feature_extractor.reset()
+
     def _within_correlation_window(self, earlier_timestamp, later_timestamp):
         if earlier_timestamp is None or later_timestamp is None:
             return False
@@ -453,7 +526,7 @@ class MLIDSPipeline(object):
 
     @staticmethod
     def _validated_mode(mode):
-        normalized = (mode or "threshold_only").strip().lower()
+        normalized = normalize_ids_mode_internal(mode, default="threshold_only")
         if normalized not in VALID_ML_MODES:
             return "threshold_only"
         return normalized

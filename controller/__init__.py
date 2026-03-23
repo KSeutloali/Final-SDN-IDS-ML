@@ -1,5 +1,14 @@
-"""Controller package exports."""
+"""Controller package exports.
 
-from controller.main import SecurityController
+Keep imports lazy so test discovery does not require Ryu to be installed.
+"""
 
 __all__ = ["SecurityController"]
+
+
+def __getattr__(name):
+    if name == "SecurityController":
+        from controller.main import SecurityController
+
+        return SecurityController
+    raise AttributeError(name)

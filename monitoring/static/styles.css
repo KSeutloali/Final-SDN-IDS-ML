@@ -245,6 +245,34 @@ canvas {
   padding: 0 28px 24px;
 }
 
+.mode-banner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 18px;
+  border-radius: var(--radius-md);
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--panel-border);
+}
+
+.mode-banner__label {
+  color: var(--text-soft);
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.mode-banner__value {
+  font-size: 1rem;
+}
+
+.mode-banner__meta {
+  color: var(--text-dim);
+  font-size: 0.95rem;
+}
+
 .card-grid,
 .panel-grid {
   display: grid;
@@ -321,6 +349,86 @@ canvas {
   padding: 18px 20px 20px;
 }
 
+.control-stack {
+  display: grid;
+  gap: 16px;
+}
+
+.field {
+  display: grid;
+  gap: 8px;
+}
+
+.field__label {
+  color: var(--text-soft);
+  font-size: 0.76rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.field__control {
+  width: 100%;
+  min-height: 46px;
+  padding: 0 14px;
+  border-radius: 12px;
+  border: 1px solid rgba(66, 194, 255, 0.2);
+  background: rgba(8, 17, 31, 0.72);
+  color: var(--text);
+  font: inherit;
+}
+
+.field__control:disabled {
+  opacity: 0.7;
+  cursor: wait;
+}
+
+.mode-status-row {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.mode-state {
+  display: grid;
+  gap: 6px;
+  padding: 14px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid var(--panel-border);
+}
+
+.mode-feedback {
+  padding: 12px 14px;
+  border-radius: 12px;
+  border: 1px solid transparent;
+  font-weight: 600;
+}
+
+.mode-feedback--success {
+  background: rgba(88, 193, 140, 0.12);
+  border-color: rgba(88, 193, 140, 0.2);
+  color: #bdf4d1;
+}
+
+.mode-feedback--warning {
+  background: rgba(240, 166, 57, 0.12);
+  border-color: rgba(240, 166, 57, 0.2);
+  color: #ffd699;
+}
+
+.mode-feedback--danger {
+  background: rgba(239, 93, 77, 0.12);
+  border-color: rgba(239, 93, 77, 0.2);
+  color: #ffc1b7;
+}
+
+.form-hint {
+  margin: 0;
+  color: var(--text-dim);
+  line-height: 1.5;
+}
+
 .chart-shell {
   position: relative;
   width: 100%;
@@ -343,6 +451,15 @@ canvas {
   width: 100% !important;
   height: 100% !important;
   min-height: 0 !important;
+}
+
+.chart-fallback {
+  display: grid;
+  place-items: center;
+  height: 100%;
+  margin: 0;
+  color: var(--text-dim);
+  text-align: center;
 }
 
 .panel__header {
@@ -606,6 +723,10 @@ canvas {
   .stacked-list__item {
     flex-direction: column;
     align-items: flex-start;
+  }
+
+  .mode-status-row {
+    grid-template-columns: 1fr;
   }
 
   .statusbar__item {

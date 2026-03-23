@@ -6,6 +6,10 @@
     lastPayload: null,
     pollTimer: null,
     isFetching: false,
+    idsModePendingValue: null,
+    idsModeRequestInFlight: false,
+    idsModeStatusMessage: "Ready",
+    idsModeStatusTone: "success",
   };
 
   document.addEventListener("DOMContentLoaded", function () {
@@ -15,6 +19,7 @@
     }
 
     document.addEventListener("click", handleActionClick);
+    document.addEventListener("change", handleActionChange);
     startPolling();
   });
 
@@ -102,12 +107,16 @@
     const summary = payload.summary || {};
     const ml = payload.ml || {};
 
-    setText("chrome-ml-mode", ml.effective_mode || summary.ml_mode || "threshold_only");
+    setText(
+      "chrome-ml-mode",
+      ml.effective_mode_label || formatIdsModeLabel(ml.effective_mode || summary.ml_mode || "threshold")
+    );
     setText("chrome-last-updated", formatTimestamp(payload.generated_at));
     setText("footer-total-packets", formatNumber(summary.total_packets));
     setText("footer-switches", formatNumber(summary.active_switches));
     setText("footer-alerts", formatNumber(summary.alerts_total));
     setText("footer-blocks", formatNumber(summary.active_blocks));
+    syncIdsModeControls(payload);
   }
 
   function updatePage(payload) {
@@ -132,6 +141,7 @@
   function updateDashboardPage(payload) {
     const summary = payload.summary || {};
     const performance = payload.performance || {};
+    const ml = payload.ml || {};
 
     setText("stat-total-packets", formatNumber(summary.total_packets));
     setText("stat-packet-rate", performance.packet_in_rate_display || "0 pkt/s");
@@ -139,6 +149,8 @@
     setText("stat-active-hosts", formatNumber(summary.active_hosts));
     setText("stat-active-blocks", formatNumber(summary.active_blocks));
     setText("stat-alert-total", formatNumber(summary.alerts_total) + " alerts total");
+    setText("overview-ids-mode", ml.effective_mode_label || formatIdsModeLabel(ml.effective_mode || "threshold"));
+    setText("overview-ids-mode-detail", idsModeDescription(ml));
 
     renderLineChart("chart-overview-packets", {
       labels: labelsFromTimeseries(payload.timeseries),
@@ -188,21 +200,26 @@
     const alerts = payload.alerts || {};
     const summary = payload.summary || {};
     const severityCounts = alerts.counts_by_severity || {};
+    const ml = payload.ml || {};
 
     setText("alerts-total", formatNumber(summary.alerts_total));
     setText("alerts-threshold", formatNumber(summary.threshold_alerts_total));
     setText("alerts-ml", formatNumber(summary.ml_alerts_total));
     setText("alerts-critical", formatNumber((severityCounts.critical || 0)));
+    setText("alerts-active-mode", ml.effective_mode_label || formatIdsModeLabel(ml.effective_mode || "threshold"));
+    setText("alerts-mode-detail", idsModeAlertDescription(ml));
     renderFullAlertsTable("alerts-table", alerts.rows || []);
   }
 
   function updateBlockedHostsPage(payload) {
     const summary = payload.summary || {};
     const blockedHosts = payload.blocked_hosts || [];
+    const activeThresholdBlocks = Number(summary.active_threshold_blocks || 0);
+    const activeMlBlocks = Number(summary.active_ml_blocks || 0);
 
     setText("blocked-total", formatNumber(summary.active_blocks));
-    setText("blocked-threshold", formatNumber(summary.threshold_blocks_total));
-    setText("blocked-ml", formatNumber(summary.ml_blocks_total));
+    setText("blocked-threshold", formatNumber(activeThresholdBlocks));
+    setText("blocked-ml", formatNumber(activeMlBlocks));
     setText("blocked-manual-unblocks", formatNumber(summary.manual_unblocks_total || 0));
     renderBlockedHostsFullTable("blocked-hosts-table", blockedHosts);
   }
@@ -255,7 +272,9 @@
     setText("captures-file-count", formatNumber(sessions.length));
     setText(
       "captures-active-session",
-      (continuous.interfaces || []).map(function (row) { return row.interface; }).join(", ") || "None"
+      (continuous.interfaces || []).length
+        ? "Interfaces: " + (continuous.interfaces || []).map(function (row) { return row.interface; }).join(", ")
+        : "None"
     );
     setText("captures-status", continuous.active ? "active" : "inactive");
     setText("captures-last-scan", formatTimestamp(captures.last_scan_at));
@@ -270,8 +289,14 @@
     const predictionCounts = ml.prediction_counts || {};
     const alertCounts = ml.alert_counts || {};
 
-    setText("ml-effective-mode", ml.effective_mode || "threshold_only");
-    setText("ml-hybrid-policy", ml.hybrid_policy || "alert_only");
+    setText("ml-effective-mode", ml.effective_mode_label || formatIdsModeLabel(ml.effective_mode || "threshold"));
+    setText(
+      "ml-hybrid-policy",
+      "Selected: " +
+        (ml.selected_mode_label || formatIdsModeLabel(ml.selected_mode || "threshold")) +
+        " · Policy: " +
+        (ml.hybrid_policy || "alert_only")
+    );
     setText("ml-model-status", ml.model_available ? "Yes" : "No");
     setText("ml-model-path", ml.model_path || "-");
     setText("ml-predictions-total", formatNumber(predictionCounts.total || 0));
@@ -320,6 +345,7 @@
 
   function updateSettingsPage(payload) {
     const settings = payload.settings || {};
+    renderKeyValueGrid("settings-runtime-grid", settings.ids_runtime || {});
     renderKeyValueGrid("settings-ids-grid", settings.ids || {});
     renderKeyValueGrid("settings-firewall-grid", settings.firewall || {});
     renderKeyValueGrid("settings-ml-grid", settings.ml || {});
@@ -411,10 +437,10 @@
             "<td>" + escapeHtml(row.src_ip || "-") + "</td>" +
             "<td>" + escapeHtml(row.detector || "-") + "</td>" +
             "<td class=\"table-wrap\">" + escapeHtml(row.reason || "-") + "</td>" +
-            "<td>" + renderCaptureLink(row.related_capture) + "</td>" +
+            "<td>" + escapeHtml(row.created_at || "-") + "</td>" +
           "</tr>";
         }).join("")
-      : emptyRow(4, "No active blocks.");
+      : emptyRow(4, "No active quarantines.");
   }
 
   function renderBlockedHostsFullTable(elementId, rows) {
@@ -437,7 +463,7 @@
               "\">Unblock</button></td>" +
           "</tr>";
         }).join("")
-      : emptyRow(7, "No blocked hosts.");
+      : emptyRow(7, "No quarantined hosts.");
   }
 
   function renderTrafficTalkersTable(elementId, rows) {
@@ -530,6 +556,9 @@
 
     tbody.innerHTML = rows.length
       ? rows.map(function (row) {
+          const downloadCell = row.download_path
+            ? "<a class=\"table-link\" href=\"" + escapeAttribute(row.download_path) + "\">Download</a>"
+            : "-";
           return "<tr>" +
             "<td>" + escapeHtml(row.session_name || "-") + "</td>" +
             "<td>" + escapeHtml(row.scenario || "-") + "</td>" +
@@ -538,10 +567,72 @@
             "<td>" + escapeHtml(row.status || "-") + "</td>" +
             "<td>" + escapeHtml(row.size_human || "0 B") + "</td>" +
             "<td>" + escapeHtml(shortTimestamp(row.modified_at || row.timestamp || "-")) + "</td>" +
-            "<td><a class=\"table-link\" href=\"" + escapeAttribute(row.download_path || "#") + "\">Download</a></td>" +
+            "<td>" + downloadCell + "</td>" +
           "</tr>";
         }).join("")
       : emptyRow(8, "No capture files available.");
+  }
+
+  async function handleActionChange(event) {
+    const selector = event.target.closest(".js-ids-mode-selector");
+    if (!selector) {
+      return;
+    }
+
+    const requestedMode = normalizeIdsMode(selector.value);
+    const currentMode = currentSelectedIdsMode();
+    if (!requestedMode || requestedMode === currentMode) {
+      selector.value = currentMode;
+      return;
+    }
+
+    state.idsModePendingValue = requestedMode;
+    state.idsModeRequestInFlight = true;
+    setIdsModeStatus("Applying " + formatIdsModeLabel(requestedMode) + "...", "warning");
+    syncIdsModeControls(state.lastPayload);
+
+    try {
+      const response = await fetch(basePath() + "/api/set-ids-mode", {
+        method: "POST",
+        cache: "no-store",
+        headers: {
+          "Accept": "application/json",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ mode: requestedMode }),
+      });
+      const result = await response.json().catch(function () {
+        return {};
+      });
+
+      if (!response.ok || !result.accepted) {
+        throw new Error(result.reason || result.status || ("ids_mode_change_failed_" + response.status));
+      }
+
+      setIdsModeStatus("Queued " + formatIdsModeLabel(requestedMode) + ". Waiting for controller update...", "warning");
+      if (result.command_id) {
+        const command = await waitForCommandResult(result.command_id, 8000);
+        state.idsModePendingValue = null;
+        state.idsModeRequestInFlight = false;
+        if (command.status === "completed") {
+          setIdsModeStatus("Controller mode updated to " + formatIdsModeLabel(requestedMode) + ".", "success");
+        } else if (command.status === "noop") {
+          setIdsModeStatus(formatIdsModeLabel(requestedMode) + " is already active.", "success");
+        } else {
+          throw new Error((command.result && command.result.reason) || command.status || "ids_mode_change_failed");
+        }
+      } else {
+        state.idsModePendingValue = null;
+        state.idsModeRequestInFlight = false;
+      }
+      scheduleNextTick(150);
+    } catch (error) {
+      console.error(error);
+      state.idsModePendingValue = null;
+      state.idsModeRequestInFlight = false;
+      setIdsModeStatus(idsModeErrorMessage(error), "danger");
+      syncIdsModeControls(state.lastPayload);
+    }
   }
 
   async function handleActionClick(event) {
@@ -568,12 +659,94 @@
       if (!response.ok) {
         throw new Error("unblock_failed_" + response.status);
       }
+      const result = await response.json().catch(function () {
+        return {};
+      });
+      if (result.command_id) {
+        const command = await waitForCommandResult(result.command_id, 8000);
+        if (!(command.status === "completed" || command.status === "noop")) {
+          throw new Error((command.result && command.result.reason) || command.status || "unblock_failed");
+        }
+      }
       scheduleNextTick(150);
     } catch (error) {
       console.error(error);
       button.disabled = false;
       button.textContent = "Unblock";
     }
+  }
+
+  async function waitForCommandResult(commandId, timeoutMs) {
+    const deadline = Date.now() + Number(timeoutMs || 8000);
+    while (Date.now() < deadline) {
+      const response = await fetch(basePath() + "/api/commands/" + encodeURIComponent(commandId), {
+        cache: "no-store",
+        headers: {
+          "Accept": "application/json",
+        },
+      });
+      if (response.status === 404) {
+        await sleep(150);
+        continue;
+      }
+      if (!response.ok) {
+        throw new Error("command_status_failed_" + response.status);
+      }
+      const command = await response.json();
+      if (command.status && command.status !== "pending") {
+        return command;
+      }
+      await sleep(150);
+    }
+    throw new Error("command_timeout");
+  }
+
+  function sleep(delayMs) {
+    return new Promise(function (resolve) {
+      window.setTimeout(resolve, delayMs);
+    });
+  }
+
+  function syncIdsModeControls(payload) {
+    const ml = (payload && payload.ml) || {};
+    const selectedMode = ml.selected_mode_api || normalizeIdsMode(ml.selected_mode || "threshold");
+    const effectiveMode = ml.effective_mode_api || normalizeIdsMode(ml.effective_mode || selectedMode);
+    const selectedLabel = ml.selected_mode_label || formatIdsModeLabel(selectedMode);
+    const effectiveLabel = ml.effective_mode_label || formatIdsModeLabel(effectiveMode);
+    const selector = document.getElementById("ids-mode-selector");
+
+    if (state.idsModePendingValue && selectedMode === state.idsModePendingValue) {
+      state.idsModePendingValue = null;
+      state.idsModeRequestInFlight = false;
+      setIdsModeStatus("Controller mode updated to " + selectedLabel + ".", "success");
+    }
+
+    if (selector && !state.idsModePendingValue) {
+      selector.value = selectedMode;
+    }
+    if (selector) {
+      selector.disabled = state.idsModeRequestInFlight;
+    }
+
+    setText("ids-mode-selected", selectedLabel);
+    setText("ids-mode-effective", effectiveLabel);
+    setText("ids-mode-help", idsModeHelpText(ml));
+    updateIdsModeStatusElement();
+  }
+
+  function setIdsModeStatus(message, tone) {
+    state.idsModeStatusMessage = message;
+    state.idsModeStatusTone = tone || "success";
+    updateIdsModeStatusElement();
+  }
+
+  function updateIdsModeStatusElement() {
+    const element = document.getElementById("ids-mode-status");
+    if (!element) {
+      return;
+    }
+    element.textContent = state.idsModeStatusMessage || "Ready";
+    element.className = "mode-feedback mode-feedback--" + (state.idsModeStatusTone || "success");
   }
 
   function renderCaptureLink(relatedCapture) {
@@ -672,9 +845,14 @@
 
   function renderLineChart(elementId, data) {
     const canvas = document.getElementById(elementId);
-    if (!canvas || typeof Chart === "undefined") {
+    if (!canvas) {
       return;
     }
+    if (typeof Chart === "undefined") {
+      markChartUnavailable(canvas, "Chart rendering unavailable.");
+      return;
+    }
+    clearChartUnavailable(canvas);
 
     upsertChart(elementId, "line", {
       labels: data.labels,
@@ -709,9 +887,14 @@
 
   function renderDoughnutChart(elementId, protocolRows) {
     const canvas = document.getElementById(elementId);
-    if (!canvas || typeof Chart === "undefined") {
+    if (!canvas) {
       return;
     }
+    if (typeof Chart === "undefined") {
+      markChartUnavailable(canvas, "Chart rendering unavailable.");
+      return;
+    }
+    clearChartUnavailable(canvas);
 
     const labels = protocolRows.map(function (row) { return row.protocol; });
     const values = protocolRows.map(function (row) { return row.packet_count; });
@@ -777,6 +960,33 @@
     state.charts[key].$dataSignature = nextDataSignature;
     state.charts[key].$optionsSignature = nextOptionsSignature;
     return state.charts[key];
+  }
+
+  function markChartUnavailable(canvas, message) {
+    const shell = canvas.parentElement;
+    if (!shell) {
+      return;
+    }
+    canvas.style.display = "none";
+    let placeholder = shell.querySelector(".chart-fallback");
+    if (!placeholder) {
+      placeholder = document.createElement("p");
+      placeholder.className = "chart-fallback";
+      shell.appendChild(placeholder);
+    }
+    placeholder.textContent = message;
+  }
+
+  function clearChartUnavailable(canvas) {
+    const shell = canvas.parentElement;
+    if (!shell) {
+      return;
+    }
+    canvas.style.display = "";
+    const placeholder = shell.querySelector(".chart-fallback");
+    if (placeholder) {
+      placeholder.remove();
+    }
   }
 
   function cloneDatasets(datasets) {
@@ -852,6 +1062,97 @@
       });
     });
     return merged;
+  }
+
+  function normalizeIdsMode(mode) {
+    const value = String(mode || "").trim().toLowerCase();
+    if (value === "threshold" || value === "threshold_only") {
+      return "threshold";
+    }
+    if (value === "ml" || value === "ml_only") {
+      return "ml";
+    }
+    if (value === "hybrid") {
+      return "hybrid";
+    }
+    return "threshold";
+  }
+
+  function formatIdsModeLabel(mode) {
+    const value = normalizeIdsMode(mode);
+    if (value === "ml") {
+      return "ML IDS";
+    }
+    if (value === "hybrid") {
+      return "Hybrid";
+    }
+    return "Threshold IDS";
+  }
+
+  function currentSelectedIdsMode() {
+    const ml = (state.lastPayload && state.lastPayload.ml) || {};
+    return ml.selected_mode_api || normalizeIdsMode(ml.selected_mode || ml.effective_mode || "threshold");
+  }
+
+  function idsModeDescription(ml) {
+    const selectedMode = ml.selected_mode_api || normalizeIdsMode(ml.selected_mode || "threshold");
+    const effectiveMode = ml.effective_mode_api || normalizeIdsMode(ml.effective_mode || selectedMode);
+    if (selectedMode !== effectiveMode) {
+      return (
+        "Selected " +
+        formatIdsModeLabel(selectedMode) +
+        ", effective " +
+        formatIdsModeLabel(effectiveMode) +
+        " because the ML runtime is unavailable."
+      );
+    }
+    if (effectiveMode === "ml") {
+      return "ML-only inference is active. Threshold detections are bypassed.";
+    }
+    if (effectiveMode === "hybrid") {
+      return "Threshold IDS and ML IDS run together with live hybrid correlation.";
+    }
+    return "Threshold-based inspection only. ML inference is bypassed.";
+  }
+
+  function idsModeAlertDescription(ml) {
+    const effectiveMode = ml.effective_mode_api || normalizeIdsMode(ml.effective_mode || "threshold");
+    if (effectiveMode === "ml") {
+      return "Alert stream reflects ML detections only.";
+    }
+    if (effectiveMode === "hybrid") {
+      return "Alert stream includes threshold, ML, and hybrid correlation outcomes.";
+    }
+    return "Alert stream reflects threshold detections only.";
+  }
+
+  function idsModeHelpText(ml) {
+    const modelAvailable = !!ml.model_available;
+    const selectedMode = ml.selected_mode_api || normalizeIdsMode(ml.selected_mode || "threshold");
+    if (!modelAvailable) {
+      return "ML model is not loaded. Threshold IDS remains available, while ML and Hybrid selection are blocked.";
+    }
+    if (selectedMode === "hybrid") {
+      return "Hybrid keeps threshold IDS as the primary baseline and adds ML correlation and confidence-based response.";
+    }
+    if (selectedMode === "ml") {
+      return "ML IDS mode relies on live feature extraction and runtime model inference only.";
+    }
+    return "Threshold IDS mode keeps the explainable baseline detector active and bypasses ML inference.";
+  }
+
+  function idsModeErrorMessage(error) {
+    const message = String((error && error.message) || "ids_mode_change_failed");
+    if (message.indexOf("model_unavailable") !== -1) {
+      return "ML mode is unavailable because no runtime model is loaded.";
+    }
+    if (message.indexOf("command_timeout") !== -1) {
+      return "The controller did not confirm the IDS mode change in time.";
+    }
+    if (message.indexOf("unsupported_mode") !== -1) {
+      return "That IDS mode is not supported.";
+    }
+    return "Could not change IDS mode. The controller kept the previous selection.";
   }
 
   function calculateFreshness(payload) {

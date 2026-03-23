@@ -1,6 +1,8 @@
 """Flask JSON API endpoints for the SDN monitoring dashboard."""
 
-from flask import Blueprint, jsonify
+from flask import Blueprint, jsonify, request
+
+from core.ids_mode import normalize_ids_mode_public
 
 
 def create_api_blueprint(data_adapter, command_queue):
@@ -31,18 +33,16 @@ def create_api_blueprint(data_adapter, command_queue):
 
     @blueprint.route("/api/blocked-hosts/<path:src_ip>/unblock", methods=["POST"])
     def unblock_host(src_ip):
-        payload = data_adapter.payload_for("blocked_hosts")
-        active_sources = {row.get("src_ip") for row in payload.get("blocked_hosts", [])}
-        if src_ip not in active_sources:
+        if not src_ip:
             return (
                 jsonify(
                     {
                         "accepted": False,
-                        "status": "not_blocked",
-                        "src_ip": src_ip,
+                        "status": "invalid_request",
+                        "reason": "missing_src_ip",
                     }
                 ),
-                404,
+                400,
             )
 
         command = command_queue.enqueue(
@@ -58,6 +58,88 @@ def create_api_blueprint(data_adapter, command_queue):
                 "status": "queued",
                 "src_ip": src_ip,
                 "command_id": command.get("command_id"),
+            }
+        ), 202
+
+    @blueprint.route("/api/set_ids_mode", methods=["POST"])
+    @blueprint.route("/api/set-ids-mode", methods=["POST"])
+    def set_ids_mode():
+        payload = request.get_json(silent=True) or {}
+        raw_mode = payload.get("mode")
+        if raw_mode is None:
+            return (
+                jsonify(
+                    {
+                        "accepted": False,
+                        "status": "invalid_request",
+                        "reason": "missing_mode",
+                    }
+                ),
+                400,
+            )
+
+        raw_mode_normalized = str(raw_mode).strip().lower()
+        if raw_mode_normalized not in (
+            "threshold",
+            "threshold_only",
+            "ml",
+            "ml_only",
+            "hybrid",
+        ):
+            return (
+                jsonify(
+                    {
+                        "accepted": False,
+                        "status": "invalid_mode",
+                        "reason": "unsupported_mode",
+                        "allowed_modes": ["threshold", "ml", "hybrid"],
+                    }
+                ),
+                400,
+            )
+
+        normalized_mode = normalize_ids_mode_public(raw_mode)
+
+        command = command_queue.enqueue(
+            "set_ids_mode",
+            {
+                "mode": normalized_mode,
+                "requested_by": "dashboard",
+            },
+        )
+        return jsonify(
+            {
+                "accepted": True,
+                "status": "queued",
+                "mode": normalized_mode,
+                "command_id": command.get("command_id"),
+            }
+        ), 202
+
+    @blueprint.route("/api/commands/<path:command_id>", methods=["GET"])
+    def command_status(command_id):
+        command = command_queue.get_status(command_id)
+        if command is None:
+            return (
+                jsonify(
+                    {
+                        "found": False,
+                        "command_id": command_id,
+                    }
+                ),
+                404,
+            )
+
+        return jsonify(
+            {
+                "found": True,
+                "command_id": command.get("command_id"),
+                "action": command.get("action"),
+                "status": command.get("status"),
+                "requested_at": command.get("requested_at"),
+                "processed_at": command.get("processed_at"),
+                "payload": command.get("payload") or {},
+                "result": command.get("result") or {},
             }
         )
 

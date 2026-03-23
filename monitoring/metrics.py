@@ -109,9 +109,6 @@ class MetricsStore(object):
         else:
             self.threshold_alerts_total += 1
 
-        if details.get("agreement_with_threshold"):
-            self.hybrid_agreements_total += 1
-
         if alert.src_ip:
             host_stats = self._host_stats(alert.src_ip, alert.timestamp)
             host_stats.alert_count += 1
@@ -374,6 +371,42 @@ class MetricsStore(object):
                 for src_ip, host_stats in top_sources[:5]
             ],
         }
+
+    def reset_runtime_session(self):
+        self.total_packets = 0
+        self.total_bytes = 0
+        self.alerts_total = 0
+        self.threshold_alerts_total = 0
+        self.ml_alerts_total = 0
+        self.hybrid_agreements_total = 0
+        self.hybrid_disagreements_total = 0
+        self.threshold_only_detections_total = 0
+        self.ml_only_detections_total = 0
+        self.hybrid_correlated_total = 0
+        self.blocks_total = 0
+        self.threshold_blocks_total = 0
+        self.ml_blocks_total = 0
+        self.manual_unblocks_total = 0
+        self.capture_snapshots_saved_total = 0
+        self.alert_capture_correlations_total = 0
+        self.flow_installs_total = 0
+        self.flow_removals_total = 0
+        self.controller_events_total = 0
+        self.ml_predictions_total = 0
+        self.ml_malicious_predictions_total = 0
+        self.ml_benign_predictions_total = 0
+        self.packets_by_protocol.clear()
+        self.controller_events_by_type.clear()
+        self.flow_events_by_reason.clear()
+        self.host_stats.clear()
+        self.flow_stats.clear()
+        self.active_flow_keys.clear()
+        self.active_security_flow_keys.clear()
+        self.recent_events.clear()
+        self.recent_ml_predictions.clear()
+        self.recent_hybrid_events.clear()
+        self.latest_capture_snapshot = None
+        self.started_at = time.time()
 
     def _host_stats(self, src_ip, timestamp):
         if src_ip not in self.host_stats and len(self.host_stats) >= self.max_tracked_hosts:

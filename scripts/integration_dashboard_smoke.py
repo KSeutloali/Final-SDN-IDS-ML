@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Lightweight smoke test for the live monitoring dashboard APIs."""
+"""Lightweight smoke test for the live monitoring dashboard pages and APIs."""
 
 from __future__ import print_function
 
@@ -8,6 +8,18 @@ import json
 import sys
 from urllib.error import HTTPError, URLError
 from urllib.request import urlopen
+
+
+PAGES = (
+    ("dashboard_page", "", 'data-page="dashboard"'),
+    ("traffic_page", "/traffic", 'data-page="traffic"'),
+    ("alerts_page", "/alerts", 'data-page="alerts"'),
+    ("blocked_hosts_page", "/blocked-hosts", 'data-page="blocked_hosts"'),
+    ("performance_page", "/performance", 'data-page="performance"'),
+    ("captures_page", "/captures", 'data-page="captures"'),
+    ("ml_ids_page", "/ml-ids", 'data-page="ml_ids"'),
+    ("settings_page", "/settings", 'data-page="settings"'),
+)
 
 
 ENDPOINTS = (
@@ -30,6 +42,12 @@ def fetch_json(base_url, suffix):
     return json.loads(payload)
 
 
+def fetch_text(base_url, suffix):
+    url = base_url.rstrip("/") + suffix
+    with urlopen(url, timeout=5.0) as response:
+        return response.read().decode("utf-8")
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Validate that the dashboard APIs are responding with expected sections.",
@@ -42,6 +60,19 @@ def main():
     args = parser.parse_args()
 
     failures = []
+    for name, suffix, marker in PAGES:
+        try:
+            payload = fetch_text(args.base_url, suffix)
+        except (HTTPError, URLError, ValueError) as error:
+            failures.append("%s: %s" % (name, error))
+            continue
+
+        if marker not in payload:
+            failures.append("%s: missing page marker %s" % (name, marker))
+            continue
+
+        print("[ok] %s" % name)
+
     for name, suffix, keys in ENDPOINTS:
         try:
             payload = fetch_json(args.base_url, suffix)

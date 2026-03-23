@@ -5,6 +5,8 @@ import os
 from dataclasses import dataclass, field
 from typing import Tuple
 
+from core.ids_mode import normalize_ids_mode_internal
+
 
 def _env_bool(name, default):
     value = os.getenv(name)
@@ -43,6 +45,16 @@ def _env_tuple(name, default):
 
 def _env_int_tuple(name, default):
     return tuple(int(item) for item in _env_tuple(name, default))
+
+
+def _env_ids_mode(default):
+    explicit_mode = os.getenv("SDN_IDS_MODE")
+    if explicit_mode is not None:
+        return normalize_ids_mode_internal(explicit_mode, default=default)
+    legacy_mode = os.getenv("SDN_ML_MODE")
+    if legacy_mode is not None:
+        return normalize_ids_mode_internal(legacy_mode, default=default)
+    return normalize_ids_mode_internal(default, default=default)
 
 
 @dataclass(frozen=True)
@@ -146,6 +158,7 @@ class CaptureConfig:
     ring_file_seconds: int = 30
     ring_file_count: int = 12
     snapshot_files_per_interface: int = 2
+    snapshot_settle_seconds: float = 1.0
     snapshot_cooldown_seconds: int = 10
 
 
@@ -153,6 +166,7 @@ class CaptureConfig:
 class MLConfig:
     enabled: bool = False
     mode: str = "threshold_only"
+    mode_state_path: str = "runtime/ids_mode_state.json"
     hybrid_policy: str = "alert_only"
     model_path: str = "models/random_forest_ids.joblib"
     dataset_path: str = "datasets/cicids2018.parquet"
@@ -163,6 +177,7 @@ class MLConfig:
     dataset_record_unlabeled: bool = False
     dataset_disable_mitigation: bool = False
     feature_window_seconds: int = 10
+    unanswered_syn_timeout_seconds: float = 1.5
     minimum_packets_before_inference: int = 12
     inference_packet_stride: int = 6
     inference_cooldown_seconds: float = 2.0
@@ -367,6 +382,10 @@ def load_config():
                 "SDN_CAPTURE_SNAPSHOT_FILES_PER_INTERFACE",
                 2,
             ),
+            snapshot_settle_seconds=_env_float(
+                "SDN_CAPTURE_SNAPSHOT_SETTLE_SECONDS",
+                1.0,
+            ),
             snapshot_cooldown_seconds=_env_int(
                 "SDN_CAPTURE_SNAPSHOT_COOLDOWN_SECONDS",
                 10,
@@ -374,7 +393,11 @@ def load_config():
         ),
         ml=MLConfig(
             enabled=_env_bool("SDN_ML_ENABLED", False),
-            mode=_env_str("SDN_ML_MODE", "threshold_only").strip().lower(),
+            mode=_env_ids_mode("threshold"),
+            mode_state_path=_env_str(
+                "SDN_IDS_MODE_STATE_PATH",
+                "runtime/ids_mode_state.json",
+            ),
             hybrid_policy=_env_str(
                 "SDN_ML_HYBRID_POLICY",
                 "alert_only",
@@ -414,6 +437,10 @@ def load_config():
             feature_window_seconds=_env_int(
                 "SDN_ML_FEATURE_WINDOW_SECONDS",
                 10,
+            ),
+            unanswered_syn_timeout_seconds=_env_float(
+                "SDN_ML_UNANSWERED_SYN_TIMEOUT_SECONDS",
+                1.5,
             ),
             minimum_packets_before_inference=_env_int(
                 "SDN_ML_MINIMUM_PACKETS_BEFORE_INFERENCE",

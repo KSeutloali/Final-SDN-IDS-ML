@@ -36,6 +36,7 @@ class ConfigLoadingTests(unittest.TestCase):
             self.assertEqual(config.capture.snapshot_cooldown_seconds, 10)
             self.assertFalse(config.ml.enabled)
             self.assertEqual(config.ml.mode, "threshold_only")
+            self.assertEqual(config.ml.mode_state_path, "runtime/ids_mode_state.json")
             self.assertEqual(config.ml.hybrid_policy, "alert_only")
             self.assertEqual(
                 config.ml.model_path,
@@ -50,6 +51,7 @@ class ConfigLoadingTests(unittest.TestCase):
             self.assertEqual(config.ml.dataset_label_path, "runtime/dataset_label.json")
             self.assertFalse(config.ml.dataset_record_unlabeled)
             self.assertFalse(config.ml.dataset_disable_mitigation)
+            self.assertAlmostEqual(config.ml.unanswered_syn_timeout_seconds, 1.5)
             self.assertEqual(config.ml.hybrid_correlation_window_seconds, 10)
             self.assertFalse(config.logging.log_allowed_traffic)
             self.assertEqual(config.dashboard.port, 8080)
@@ -81,8 +83,9 @@ class ConfigLoadingTests(unittest.TestCase):
                 "SDN_CAPTURE_SNAPSHOT_FILES_PER_INTERFACE": "3",
                 "SDN_CAPTURE_SNAPSHOT_COOLDOWN_SECONDS": "4",
                 "SDN_ML_ENABLED": "true",
-                "SDN_ML_MODE": "hybrid",
+                "SDN_IDS_MODE": "ml",
                 "SDN_ML_HYBRID_POLICY": "high_confidence_block",
+                "SDN_IDS_MODE_STATE_PATH": "runtime/custom-ids-mode.json",
                 "SDN_ML_MODEL_PATH": "models/demo.joblib",
                 "SDN_ML_DATASET_PATH": "datasets/custom.parquet",
                 "SDN_ML_DATASET_RECORDING_ENABLED": "true",
@@ -90,6 +93,7 @@ class ConfigLoadingTests(unittest.TestCase):
                 "SDN_ML_DATASET_LABEL_PATH": "runtime/custom-label.json",
                 "SDN_ML_DATASET_RECORD_UNLABELED": "true",
                 "SDN_ML_DATASET_DISABLE_MITIGATION": "true",
+                "SDN_ML_UNANSWERED_SYN_TIMEOUT_SECONDS": "0.9",
                 "SDN_ML_CONFIDENCE_THRESHOLD": "0.66",
                 "SDN_ML_HYBRID_CORRELATION_WINDOW_SECONDS": "15",
                 "SDN_ML_POSITIVE_LABELS": "malicious,attack,scan",
@@ -125,7 +129,8 @@ class ConfigLoadingTests(unittest.TestCase):
             self.assertEqual(config.capture.snapshot_files_per_interface, 3)
             self.assertEqual(config.capture.snapshot_cooldown_seconds, 4)
             self.assertTrue(config.ml.enabled)
-            self.assertEqual(config.ml.mode, "hybrid")
+            self.assertEqual(config.ml.mode, "ml_only")
+            self.assertEqual(config.ml.mode_state_path, "runtime/custom-ids-mode.json")
             self.assertEqual(config.ml.hybrid_policy, "high_confidence_block")
             self.assertEqual(config.ml.model_path, "models/demo.joblib")
             self.assertEqual(config.ml.dataset_path, "datasets/custom.parquet")
@@ -134,6 +139,7 @@ class ConfigLoadingTests(unittest.TestCase):
             self.assertEqual(config.ml.dataset_label_path, "runtime/custom-label.json")
             self.assertTrue(config.ml.dataset_record_unlabeled)
             self.assertTrue(config.ml.dataset_disable_mitigation)
+            self.assertAlmostEqual(config.ml.unanswered_syn_timeout_seconds, 0.9)
             self.assertAlmostEqual(config.ml.confidence_threshold, 0.66)
             self.assertEqual(config.ml.hybrid_correlation_window_seconds, 15)
             self.assertEqual(

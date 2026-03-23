@@ -5,6 +5,7 @@ import tempfile
 import unittest
 
 from config.settings import MLConfig
+from ml.feature_extractor import RUNTIME_FEATURE_NAMES
 from ml.model_loader import save_model_bundle
 from ml.pipeline import MLIDSPipeline
 from security.ids import IDSAlert
@@ -68,22 +69,7 @@ class MLPipelineTests(unittest.TestCase):
                 model_path,
                 {
                     "model": FakeRandomForestModel(malicious_probability=0.97),
-                    "feature_names": (
-                        "packet_count",
-                        "byte_count",
-                        "unique_destination_ports",
-                        "unique_destination_ips",
-                        "connection_rate",
-                        "syn_rate",
-                        "icmp_rate",
-                        "udp_rate",
-                        "tcp_rate",
-                        "average_packet_size",
-                        "observation_window_seconds",
-                        "packet_rate",
-                        "bytes_per_second",
-                        "failed_connection_rate",
-                    ),
+                    "feature_names": tuple(RUNTIME_FEATURE_NAMES),
                     "positive_labels": ("malicious",),
                     "metadata": {"model_name": "random_forest", "model_version": "1"},
                 },
@@ -109,6 +95,40 @@ class MLPipelineTests(unittest.TestCase):
         self.assertTrue(result.alert.should_mitigate)
         self.assertEqual(result.alert.decision, "hybrid_ml_block")
 
+    def test_runtime_mode_switch_updates_effective_mode_without_restart(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            model_path = os.path.join(temp_dir, "rf.joblib")
+            save_model_bundle(
+                model_path,
+                {
+                    "model": FakeRandomForestModel(malicious_probability=0.94),
+                    "feature_names": tuple(RUNTIME_FEATURE_NAMES),
+                    "positive_labels": ("malicious",),
+                    "metadata": {"model_name": "random_forest", "model_version": "1"},
+                },
+            )
+            pipeline = MLIDSPipeline(
+                MLConfig(
+                    enabled=False,
+                    mode="threshold_only",
+                    model_path=model_path,
+                    minimum_packets_before_inference=1,
+                    inference_packet_stride=1,
+                    inference_cooldown_seconds=0.0,
+                    alert_suppression_seconds=0,
+                )
+            )
+
+            self.assertEqual(pipeline.effective_mode(), "threshold_only")
+
+            change = pipeline.set_mode("ml")
+
+        self.assertTrue(change["changed"])
+        self.assertEqual(change["selected_mode_api"], "ml")
+        self.assertEqual(change["effective_mode"], "ml_only")
+        self.assertEqual(pipeline.status()["selected_mode_api"], "ml")
+        self.assertEqual(pipeline.status()["effective_mode_api"], "ml")
+
     def test_threshold_and_ml_agreement_marks_alert_as_confirmed(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             model_path = os.path.join(temp_dir, "rf.joblib")
@@ -116,22 +136,7 @@ class MLPipelineTests(unittest.TestCase):
                 model_path,
                 {
                     "model": FakeRandomForestModel(malicious_probability=0.88),
-                    "feature_names": (
-                        "packet_count",
-                        "byte_count",
-                        "unique_destination_ports",
-                        "unique_destination_ips",
-                        "connection_rate",
-                        "syn_rate",
-                        "icmp_rate",
-                        "udp_rate",
-                        "tcp_rate",
-                        "average_packet_size",
-                        "observation_window_seconds",
-                        "packet_rate",
-                        "bytes_per_second",
-                        "failed_connection_rate",
-                    ),
+                    "feature_names": tuple(RUNTIME_FEATURE_NAMES),
                     "positive_labels": ("malicious",),
                     "metadata": {"model_name": "random_forest", "model_version": "1"},
                 },
@@ -234,6 +239,50 @@ class MLPipelineTests(unittest.TestCase):
         expired = pipeline.expire_correlations(16.0)
         self.assertEqual(len(expired), 1)
         self.assertEqual(expired[0].status, "disagreement")
+
+    def test_reset_runtime_session_clears_pending_runtime_state(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            model_path = os.path.join(temp_dir, "rf.joblib")
+            save_model_bundle(
+                model_path,
+                {
+                    "model": FakeRandomForestModel(malicious_probability=0.88),
+                    "feature_names": tuple(RUNTIME_FEATURE_NAMES),
+                    "positive_labels": ("malicious",),
+                    "metadata": {"model_name": "random_forest", "model_version": "1"},
+                },
+            )
+            pipeline = MLIDSPipeline(
+                MLConfig(
+                    enabled=True,
+                    mode="hybrid",
+                    model_path=model_path,
+                    minimum_packets_before_inference=1,
+                    inference_packet_stride=1,
+                    inference_cooldown_seconds=0.0,
+                    alert_suppression_seconds=0,
+                )
+            )
+
+            threshold_alert = IDSAlert(
+                alert_type="port_scan_detected",
+                src_ip="10.0.0.3",
+                reason="unique_destination_ports_threshold_exceeded",
+                timestamp=1.0,
+            )
+            pipeline.inspect(PacketStub(timestamp=2.0), threshold_alerts=[threshold_alert])
+            self.assertTrue(pipeline.pending_threshold_alerts)
+            self.assertTrue(pipeline.observed_packets)
+
+            pipeline.reset_runtime_session()
+
+            self.assertEqual(pipeline.pending_threshold_alerts, {})
+            self.assertEqual(pipeline.pending_ml_alerts, {})
+            self.assertEqual(pipeline.recent_prediction_state, {})
+            self.assertEqual(pipeline.observed_packets, {})
+            self.assertEqual(dict(pipeline.feature_extractor.host_windows), {})
+            self.assertEqual(dict(pipeline.feature_extractor.unanswered_windows), {})
+            self.assertEqual(dict(pipeline.feature_extractor.pending_attempt_counts), {})
 
 
 if __name__ == "__main__":

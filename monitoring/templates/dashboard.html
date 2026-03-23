@@ -18,10 +18,16 @@
     <span class="metric-card__meta">Visible to controller</span>
   </article>
   <article class="metric-card metric-card--danger">
-    <span class="metric-card__label">Blocked Hosts</span>
+    <span class="metric-card__label">Quarantined Hosts</span>
     <strong class="metric-card__value" id="stat-active-blocks">0</strong>
     <span class="metric-card__meta" id="stat-alert-total">0 alerts total</span>
   </article>
+</section>
+
+<section class="mode-banner">
+  <span class="mode-banner__label">Active IDS Mode</span>
+  <strong class="mode-banner__value" id="overview-ids-mode">Threshold IDS</strong>
+  <span class="mode-banner__meta" id="overview-ids-mode-detail">Threshold-based inspection only.</span>
 </section>
 
 <section class="panel-grid panel-grid--wide">
@@ -65,7 +71,7 @@
     <div class="panel__header">
       <div>
         <h2>Recent Security Events</h2>
-        <p>Newest alerts, blocks, and expiries without refreshing the page.</p>
+        <p>Newest alerts and hybrid outcomes without refreshing the page.</p>
       </div>
     </div>
     <div class="table-shell">
@@ -89,8 +95,8 @@
   <article class="panel">
     <div class="panel__header">
       <div>
-        <h2>Blocked Hosts</h2>
-        <p>Current temporary blocks installed by threshold or ML logic.</p>
+        <h2>Quarantined Hosts</h2>
+        <p>Current analyst-held quarantines installed by threshold or ML logic.</p>
       </div>
     </div>
     <div class="table-shell">
@@ -100,7 +106,7 @@
             <th>IP</th>
             <th>Detector</th>
             <th>Reason</th>
-            <th>Expires</th>
+            <th>Blocked</th>
           </tr>
         </thead>
         <tbody id="overview-blocked-table"></tbody>

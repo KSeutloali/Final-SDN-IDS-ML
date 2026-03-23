@@ -2,6 +2,12 @@
 
 This repository provides a modular SDN security testbed built around Mininet and Ryu v4.30. The current implementation includes OpenFlow 1.3 forwarding, static firewall policy, threshold-based IDS, optional ML-assisted IDS, continuous packet capture with preserved alert snapshots, and a lightweight Flask dashboard backed by shared controller state snapshots.
 
+## Demo Brief
+
+For a supervisor presentation or viva-style walkthrough, use:
+
+- [SUPERVISOR_DEMO_BRIEF.md](SUPERVISOR_DEMO_BRIEF.md)
+
 ## Repository Layout
 
 ```text

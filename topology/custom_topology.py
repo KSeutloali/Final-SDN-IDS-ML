@@ -1,9 +1,11 @@
 """Custom multi-switch Mininet topology for the SDN security testbed."""
 
 import argparse
+import json
 import os
 from pathlib import Path
 import sys
+import threading
 import time
 from functools import partial
 
@@ -37,6 +39,9 @@ INTERFACE_MAP = (
     "h2-eth0 <-> s3-eth2  primary server link",
     "h5-eth0 <-> s3-eth3  backup server link",
 )
+
+TOPOLOGY_RUNTIME_STATE_PATH = PROJECT_ROOT / "runtime" / "mininet_runtime.json"
+TOPOLOGY_MONITOR_INTERVAL_SECONDS = 2.0
 
 SERVICE_SPECS = (
     ("h2", 80, "primary_http_service"),
@@ -99,12 +104,33 @@ def build_network(
     disable_host_offloading(network)
 
     app_config = load_config()
-    network.capture_manager = PacketCaptureManager(app_config.capture)
+    network.capture_manager = PacketCaptureManager(
+        app_config.capture,
+        interface_runtime_map=build_capture_interface_runtime_map(
+            network,
+            app_config.capture.interfaces,
+        ),
+    )
     network.capture_manager.start_continuous_capture()
     network.service_processes = []
     if start_services:
         network.service_processes = start_support_services(network)
 
+    start_runtime_monitor(
+        network,
+        controller_ip=controller_ip,
+        controller_port=controller_port,
+        switch_mode=switch_mode,
+        services_enabled=start_services,
+    )
+
+    write_runtime_state(
+        network,
+        controller_ip=controller_ip,
+        controller_port=controller_port,
+        switch_mode=switch_mode,
+        services_enabled=start_services,
+    )
     describe_network(network, start_services=start_services)
     return network
 
@@ -134,6 +160,27 @@ def disable_host_offloading(network):
                         feature=feature,
                     )
                 )
+
+
+def build_capture_interface_runtime_map(network, interface_names):
+    interface_runtime_map = {}
+    for host in network.hosts:
+        host_pid = int(getattr(host, "pid", 0) or 0)
+        for interface_name in host.intfNames():
+            interface_runtime_map[interface_name] = {
+                "namespace_pid": host_pid,
+                "host_name": host.name,
+            }
+
+    for interface_name in interface_names:
+        interface_runtime_map.setdefault(
+            interface_name,
+            {
+                "namespace_pid": None,
+                "host_name": None,
+            },
+        )
+    return interface_runtime_map
 
 
 def start_support_services(network):
@@ -182,6 +229,8 @@ def start_support_services(network):
 def stop_support_services(network):
     """Stop any background services started by this topology helper."""
 
+    stop_runtime_monitor(network)
+
     for process in getattr(network, "service_processes", []):
         log_handle = process.get("log_handle")
         running_process = process.get("process")
@@ -200,6 +249,53 @@ def stop_support_services(network):
     capture_manager = getattr(network, "capture_manager", None)
     if capture_manager is not None:
         capture_manager.stop()
+
+
+def start_runtime_monitor(network, controller_ip, controller_port, switch_mode, services_enabled):
+    stop_event = threading.Event()
+
+    def _monitor():
+        while not stop_event.wait(TOPOLOGY_MONITOR_INTERVAL_SECONDS):
+            capture_manager = getattr(network, "capture_manager", None)
+            if capture_manager is not None:
+                try:
+                    capture_manager.ensure_healthy(restart_workers=True)
+                except Exception:
+                    pass
+            try:
+                write_runtime_state(
+                    network,
+                    controller_ip=controller_ip,
+                    controller_port=controller_port,
+                    switch_mode=switch_mode,
+                    services_enabled=services_enabled,
+                )
+            except Exception:
+                pass
+
+    monitor_thread = threading.Thread(
+        target=_monitor,
+        name="topology-runtime-monitor",
+    )
+    monitor_thread.daemon = True
+    monitor_thread.start()
+    network.runtime_monitor = {
+        "thread": monitor_thread,
+        "stop_event": stop_event,
+    }
+
+
+def stop_runtime_monitor(network):
+    runtime_monitor = getattr(network, "runtime_monitor", None)
+    if not runtime_monitor:
+        return
+    stop_event = runtime_monitor.get("stop_event")
+    monitor_thread = runtime_monitor.get("thread")
+    if stop_event is not None:
+        stop_event.set()
+    if monitor_thread is not None and monitor_thread.is_alive():
+        monitor_thread.join(timeout=3.0)
+    network.runtime_monitor = None
 
 
 def wait_for_service_ready(host, port, attempts=40, sleep_seconds=0.25, log_path=None):
@@ -230,6 +326,44 @@ def wait_for_service_ready(host, port, attempts=40, sleep_seconds=0.25, log_path
             log=log_excerpt or "unavailable",
         )
     )
+
+
+def write_runtime_state(network, controller_ip, controller_port, switch_mode, services_enabled):
+    """Persist topology readiness and host namespace PIDs for validation helpers."""
+
+    TOPOLOGY_RUNTIME_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    capture_manager = getattr(network, "capture_manager", None)
+    capture_status = capture_manager.status() if capture_manager is not None else {}
+    payload = {
+        "active": True,
+        "updated_at": time.time(),
+        "topology_pid": os.getpid(),
+        "controller_ip": controller_ip,
+        "controller_port": controller_port,
+        "switch_mode": switch_mode,
+        "services_enabled": bool(services_enabled),
+        "capture_active": bool(capture_status.get("active")),
+        "host_pids": dict(
+            (host.name, int(getattr(host, "pid", 0) or 0))
+            for host in network.hosts
+        ),
+    }
+    temp_path = TOPOLOGY_RUNTIME_STATE_PATH.with_suffix(".tmp")
+    temp_path.write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
+    temp_path.replace(TOPOLOGY_RUNTIME_STATE_PATH)
+
+
+def clear_runtime_state():
+    payload = {
+        "active": False,
+        "updated_at": time.time(),
+        "topology_pid": None,
+        "host_pids": {},
+    }
+    TOPOLOGY_RUNTIME_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = TOPOLOGY_RUNTIME_STATE_PATH.with_suffix(".tmp")
+    temp_path.write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
+    temp_path.replace(TOPOLOGY_RUNTIME_STATE_PATH)
 
 
 def describe_network(network, start_services=False):
@@ -332,4 +466,5 @@ if __name__ == "__main__":
             CLI(network)
     finally:
         stop_support_services(network)
+        clear_runtime_state()
         network.stop()

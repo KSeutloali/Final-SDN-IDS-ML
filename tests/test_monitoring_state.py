@@ -1,6 +1,9 @@
 """Tests for the shared dashboard state writer and reader."""
 
+import json
+from pathlib import Path
 import tempfile
+import time
 import unittest
 
 from config.settings import DashboardConfig
@@ -97,8 +100,93 @@ class DashboardStateTests(unittest.TestCase):
             self.assertTrue(isinstance(loaded["timeseries"], list))
             self.assertEqual(loaded["ml_status"]["effective_mode"], "hybrid")
             self.assertEqual(enriched["ml"]["effective_mode"], "hybrid")
+            self.assertEqual(enriched["ml"]["selected_mode_api"], "hybrid")
+            self.assertEqual(enriched["ml"]["effective_mode_api"], "hybrid")
             self.assertEqual(enriched["performance"]["flow_installs_total"], 1)
             self.assertTrue("captures" in enriched)
+            self.assertEqual(
+                enriched["settings"]["ids_runtime"]["effective_mode"],
+                "Hybrid",
+            )
+            self.assertEqual(enriched["summary"]["active_threshold_blocks"], 1)
+            self.assertEqual(enriched["summary"]["active_ml_blocks"], 0)
+
+    def test_writer_preserves_existing_state_until_real_publish(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state_file_path = temp_dir + "/dashboard_state.json"
+            dashboard_config = DashboardConfig(
+                state_file_path=state_file_path,
+                persist_interval_seconds=60.0,
+                timeseries_points=4,
+            )
+            with open(state_file_path, "w") as handle:
+                handle.write(
+                    '{"generated_at_epoch": 10, "summary": {"total_packets": 123}, "timeseries": []}'
+                )
+
+            writer = DashboardStateWriter(dashboard_config)
+            reader = DashboardStateReader(dashboard_config)
+            loaded = reader.read()
+
+            self.assertEqual(loaded["summary"]["total_packets"], 123)
+            self.assertEqual(writer._last_persist_at, 10.0)
+
+    def test_stale_continuous_capture_state_is_marked_inactive(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state_file_path = temp_dir + "/dashboard_state.json"
+            dashboard_config = DashboardConfig(
+                state_file_path=state_file_path,
+                persist_interval_seconds=0.0,
+                timeseries_points=4,
+            )
+            reader = DashboardStateReader(dashboard_config)
+            adapter = DashboardDataAdapter(
+                type(
+                    "Config",
+                    (),
+                    {
+                        "dashboard": dashboard_config,
+                        "ml": type(
+                            "ML",
+                            (),
+                            {
+                                "mode": "threshold_only",
+                                "hybrid_policy": "alert_only",
+                                "model_path": "models/random_forest_ids.joblib",
+                            },
+                        )(),
+                    },
+                )()
+            )
+            adapter.state_reader = reader
+            adapter.capture_root = Path(temp_dir) / "captures"
+            adapter.active_capture_file = adapter.capture_root / ".active_capture_session"
+            adapter.continuous_capture_state_file = (
+                adapter.capture_root / "continuous" / "continuous_capture_state.json"
+            )
+            adapter.continuous_capture_state_file.parent.mkdir(parents=True, exist_ok=True)
+            adapter.continuous_capture_state_file.write_text(
+                json.dumps(
+                    {
+                        "active": True,
+                        "enabled": True,
+                        "updated_at_epoch": time.time() - 600.0,
+                        "stale_after_seconds": 75.0,
+                        "interfaces": [{"interface": "s2-eth3", "status": "active"}],
+                    },
+                    sort_keys=True,
+                ),
+                encoding="utf-8",
+            )
+
+            enriched = adapter.read()
+
+            self.assertFalse(enriched["captures"]["continuous"]["active"])
+            self.assertTrue(enriched["captures"]["continuous"]["stale"])
+            self.assertEqual(
+                enriched["captures"]["continuous"]["reason"],
+                "capture_state_stale",
+            )
 
 
 if __name__ == "__main__":

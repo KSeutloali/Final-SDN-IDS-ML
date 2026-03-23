@@ -79,6 +79,9 @@ class RuntimeDatasetRecorderTests(unittest.TestCase):
             self.assertEqual(row["Total Bytes"], 128)
             self.assertEqual(row["SYN Flag Count"], 1)
             self.assertEqual(row["RST Flag Count"], 0)
+            self.assertIn("Runtime unanswered_syn_rate", row)
+            self.assertIn("Runtime unanswered_syn_ratio", row)
+            self.assertIn("Runtime destination_port_fanout_ratio", row)
 
     def test_record_skips_unlabeled_rows_by_default(self):
         with TemporaryDirectory() as temporary_directory:

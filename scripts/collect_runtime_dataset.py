@@ -29,9 +29,45 @@ class Scenario(object):
     allow_nonzero: bool = False
 
 
+COLLECTION_PROFILES = ("balanced", "scan_heavy", "flood_heavy")
+
+
+def profile_settings(profile_name):
+    profile = str(profile_name or "balanced").strip().lower()
+    if profile == "scan_heavy":
+        return {
+            "scan_repeat_factor": 3,
+            "sweep_repeat_factor": 2,
+            "flood_repeat_factor": 1,
+            "include_extended_scans": True,
+        }
+    if profile == "flood_heavy":
+        return {
+            "scan_repeat_factor": 1,
+            "sweep_repeat_factor": 1,
+            "flood_repeat_factor": 3,
+            "include_extended_scans": False,
+        }
+    return {
+        "scan_repeat_factor": 1,
+        "sweep_repeat_factor": 1,
+        "flood_repeat_factor": 1,
+        "include_extended_scans": False,
+    }
+
+
 def parse_args():
     parser = argparse.ArgumentParser(
         description="Run several labeled scenarios and export a live-compatible parquet dataset.",
+    )
+    parser.add_argument(
+        "--collection-profile",
+        default="balanced",
+        choices=COLLECTION_PROFILES,
+        help=(
+            "Scenario mix profile. 'scan_heavy' increases scan and sweep coverage "
+            "while still keeping flood scenarios in every repeat."
+        ),
     )
     parser.add_argument(
         "--jsonl-output",
@@ -303,11 +339,24 @@ def build_scenarios(
     benign_loops,
     flood_count,
     flood_interval_usec,
+    collection_profile="balanced",
 ):
     scenarios = []
+    profile = profile_settings(collection_profile)
 
-    def add_scenario(label, scenario_id, repeat_index, host, command, note="", allow_nonzero=False):
+    def add_scenario(
+        label,
+        scenario_id,
+        repeat_index,
+        host,
+        command,
+        note="",
+        allow_nonzero=False,
+        sequence=None,
+    ):
         scenario_name = "%s_r%s" % (scenario_id, repeat_index)
+        if sequence is not None:
+            scenario_name = "%s_s%s" % (scenario_name, sequence)
         scenarios.append(
             Scenario(
                 label=label,
@@ -384,65 +433,98 @@ def build_scenarios(
         )
 
     for repeat_index in range(1, max(1, attack_repeats) + 1):
-        add_scenario(
-            label="malicious",
-            scenario_id="attack_port_scan_tcp_h3",
-            repeat_index=repeat_index,
-            host="h3",
-            command="/workspace/ryu-apps/attacks/port_scan.sh 10.0.0.2",
-            note="tcp_syn_port_scan",
-        )
-        add_scenario(
-            label="malicious",
-            scenario_id="attack_port_scan_udp_h3",
-            repeat_index=repeat_index,
-            host="h3",
-            command=(
-                "nmap -sU -Pn -T4 --max-retries 0 --top-ports 12 10.0.0.2"
-            ),
-            note="udp_service_probe",
-        )
-        add_scenario(
-            label="malicious",
-            scenario_id="attack_icmp_sweep_h3",
-            repeat_index=repeat_index,
-            host="h3",
-            command=(
-                "for _round in 1 2 3; do "
-                "for _ip in 10.0.0.1 10.0.0.2 10.0.0.4 10.0.0.5; do "
-                "ping -c 3 -i 0.2 ${_ip} >/dev/null; "
-                "done; "
-                "sleep 1; "
-                "done"
-            ),
-            note="icmp_host_sweep",
-        )
-        add_scenario(
-            label="malicious",
-            scenario_id="attack_syn_flood_h1",
-            repeat_index=repeat_index,
-            host="h1",
-            command=(
-                "SDN_HPING_INTERVAL_USEC=%s "
-                "/workspace/ryu-apps/attacks/dos_flood.sh 10.0.0.2 80 %s"
+        for sequence in range(1, profile["scan_repeat_factor"] + 1):
+            add_scenario(
+                label="malicious",
+                scenario_id="attack_port_scan_tcp_h3",
+                repeat_index=repeat_index,
+                host="h3",
+                command="/workspace/ryu-apps/attacks/port_scan.sh 10.0.0.2",
+                note="tcp_syn_port_scan",
+                sequence=sequence,
             )
-            % (flood_interval_usec, flood_count),
-            note="open_port_syn_flood",
-            allow_nonzero=True,
-        )
-        add_scenario(
-            label="malicious",
-            scenario_id="attack_failed_connection_flood_h4",
-            repeat_index=repeat_index,
-            host="h4",
-            command=(
-                "SDN_HPING_INTERVAL_USEC=%s "
-                "/workspace/ryu-apps/attacks/dos_flood.sh 10.0.0.2 81 %s"
+            add_scenario(
+                label="malicious",
+                scenario_id="attack_port_scan_udp_h3",
+                repeat_index=repeat_index,
+                host="h3",
+                command=(
+                    "nmap -sU -Pn -T4 --max-retries 0 --top-ports 12 10.0.0.2"
+                ),
+                note="udp_service_probe",
+                sequence=sequence,
             )
-            % (flood_interval_usec, flood_count),
-            note="closed_port_failed_connection_flood",
-            allow_nonzero=True,
-        )
+            if profile["include_extended_scans"]:
+                add_scenario(
+                    label="malicious",
+                    scenario_id="attack_port_scan_tcp_wide_h3",
+                    repeat_index=repeat_index,
+                    host="h3",
+                    command=(
+                        "nmap -sS -Pn -T3 --max-retries 1 -p 1-100 10.0.0.2"
+                    ),
+                    note="wider_filtered_tcp_scan",
+                    sequence=sequence,
+                )
+                add_scenario(
+                    label="malicious",
+                    scenario_id="attack_host_scan_tcp_h3",
+                    repeat_index=repeat_index,
+                    host="h3",
+                    command=(
+                        "nmap -sS -Pn -T4 --max-retries 0 -p 1-30 10.0.0.1-5"
+                    ),
+                    note="multi_host_tcp_scan",
+                    sequence=sequence,
+                )
+
+        for sequence in range(1, profile["sweep_repeat_factor"] + 1):
+            add_scenario(
+                label="malicious",
+                scenario_id="attack_icmp_sweep_h3",
+                repeat_index=repeat_index,
+                host="h3",
+                command=(
+                    "for _round in 1 2 3; do "
+                    "for _ip in 10.0.0.1 10.0.0.2 10.0.0.4 10.0.0.5; do "
+                    "ping -c 3 -i 0.2 ${_ip} >/dev/null; "
+                    "done; "
+                    "sleep 1; "
+                    "done"
+                ),
+                note="icmp_host_sweep",
+                sequence=sequence,
+            )
+
+        for sequence in range(1, profile["flood_repeat_factor"] + 1):
+            add_scenario(
+                label="malicious",
+                scenario_id="attack_syn_flood_h1",
+                repeat_index=repeat_index,
+                host="h1",
+                command=(
+                    "SDN_HPING_INTERVAL_USEC=%s "
+                    "/workspace/ryu-apps/attacks/dos_flood.sh 10.0.0.2 80 %s"
+                )
+                % (flood_interval_usec, flood_count),
+                note="open_port_syn_flood",
+                allow_nonzero=True,
+                sequence=sequence,
+            )
+            add_scenario(
+                label="malicious",
+                scenario_id="attack_failed_connection_flood_h4",
+                repeat_index=repeat_index,
+                host="h4",
+                command=(
+                    "SDN_HPING_INTERVAL_USEC=%s "
+                    "/workspace/ryu-apps/attacks/dos_flood.sh 10.0.0.2 81 %s"
+                )
+                % (flood_interval_usec, flood_count),
+                note="closed_port_failed_connection_flood",
+                allow_nonzero=True,
+                sequence=sequence,
+            )
     return scenarios
 
 
@@ -472,6 +554,7 @@ def main():
                 benign_loops=args.benign_loops,
                 flood_count=args.flood_count,
                 flood_interval_usec=args.flood_interval_usec,
+                collection_profile=args.collection_profile,
             )
             for scenario in scenarios:
                 print(
@@ -512,6 +595,7 @@ def main():
         restore_default_controller()
 
     print("\nCollection complete.")
+    print("profile=%s" % args.collection_profile)
     print("collection_id=%s" % collection_id)
     print("jsonl=%s" % jsonl_output)
     print("parquet=%s" % parquet_output)

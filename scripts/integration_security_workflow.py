@@ -9,7 +9,7 @@ from pathlib import Path
 import sys
 import time
 from urllib.error import HTTPError, URLError
-from urllib.parse import quote
+from urllib.parse import quote, urlparse
 from urllib.request import Request, urlopen
 
 
@@ -25,6 +25,32 @@ def fetch_json(base_url, suffix, method="GET"):
     request = Request(url, method=method)
     with urlopen(request, timeout=8.0) as response:
         return json.loads(response.read().decode("utf-8"))
+
+
+def fetch_bytes(base_url, suffix):
+    if suffix.startswith("http://") or suffix.startswith("https://"):
+        url = suffix
+    elif suffix.startswith("/"):
+        parsed = urlparse(base_url)
+        url = "%s://%s%s" % (parsed.scheme, parsed.netloc, suffix)
+    else:
+        url = base_url.rstrip("/") + "/" + suffix.lstrip("/")
+    request = Request(url, method="GET")
+    with urlopen(request, timeout=12.0) as response:
+        return response.read()
+
+
+def is_capture_bytes(payload):
+    if len(payload) < 4:
+        return False
+    magic = payload[:4]
+    return magic in (
+        b"\xd4\xc3\xb2\xa1",
+        b"\xa1\xb2\xc3\xd4",
+        b"\x4d\x3c\xb2\xa1",
+        b"\xa1\xb2\x3c\x4d",
+        b"\x0a\x0d\x0d\x0a",
+    )
 
 
 def wait_for(description, timeout_seconds, poll_seconds, predicate):
@@ -156,6 +182,13 @@ def main():
         "Capture snapshot observed: %s"
         % (snapshot.get("primary_download_path") or snapshot.get("snapshot_name"))
     )
+    download_path = snapshot.get("primary_download_path")
+    if not download_path:
+        raise RuntimeError("Snapshot is missing a primary download path: %r" % snapshot)
+    capture_bytes = fetch_bytes(args.base_url, download_path)
+    if not is_capture_bytes(capture_bytes):
+        raise RuntimeError("Downloaded snapshot does not look like pcap/pcapng data.")
+    print("Capture download verified: %d bytes of pcap-compatible data." % len(capture_bytes))
 
     print("Requesting manual unblock...")
     unblock_response = fetch_json(

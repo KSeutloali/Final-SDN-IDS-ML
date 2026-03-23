@@ -50,6 +50,10 @@ def project_root():
     return Path(__file__).resolve().parents[1]
 
 
+def topology_state_path():
+    return project_root() / "runtime" / "mininet_runtime.json"
+
+
 def results_root(default_name=None):
     root = project_root() / "experiments" / "results"
     root.mkdir(parents=True, exist_ok=True)
@@ -216,22 +220,48 @@ def default_scenarios(flood_count=1200, hping_interval_usec=1000):
 
 
 def ensure_topology_running():
-    result = compose(
-        ["exec", "mininet", "sh", "-lc", "pgrep -af 'custom_topology.py'"],
-        capture_output=True,
-    )
-    if not result.stdout.strip():
-        print(
-            "No running Mininet topology found. Start it with ./scripts/run_topology.sh first.",
-            file=sys.stderr,
+    runtime_state = _topology_runtime()
+    topology_pid = runtime_state.get("topology_pid")
+    if runtime_state.get("active") and topology_pid:
+        result = compose(
+            ["exec", "mininet", "sh", "-lc", "kill -0 %s" % int(topology_pid)],
+            capture_output=True,
+            check=False,
         )
-        raise SystemExit(1)
+        if result.returncode == 0:
+            return
+
+    result = compose(
+        ["exec", "mininet", "sh", "-lc", "pgrep -af '[c]ustom_topology.py|[t]opology.custom_topology'"],
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode == 0 and result.stdout.strip():
+        return
+
+    print(
+        "No running Mininet topology found. Start it with ./scripts/run_topology.sh first.",
+        file=sys.stderr,
+    )
+    raise SystemExit(1)
 
 
 def mininet_host_pid(host_name):
+    runtime_state = _topology_runtime()
+    runtime_pid = (runtime_state.get("host_pids") or {}).get(host_name)
+    if runtime_state.get("active") and runtime_pid:
+        result = compose(
+            ["exec", "mininet", "sh", "-lc", "kill -0 %s" % int(runtime_pid)],
+            capture_output=True,
+            check=False,
+        )
+        if result.returncode == 0:
+            return str(runtime_pid)
+
     result = compose(
-        ["exec", "mininet", "sh", "-lc", "pgrep -fo 'mininet:%s'" % host_name],
+        ["exec", "mininet", "sh", "-lc", "pgrep -fo '[m]ininet:%s'" % host_name],
         capture_output=True,
+        check=False,
     )
     pid = result.stdout.strip()
     if not pid:
@@ -247,6 +277,13 @@ def run_on_host(host_name, command, capture_output=True, check=True):
         capture_output=capture_output,
         check=check,
     )
+
+
+def _topology_runtime():
+    try:
+        return json.loads(topology_state_path().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
 
 
 def recreate_controller(mode, timeout_seconds=25.0):
@@ -359,4 +396,3 @@ def write_json(path, payload):
     target = Path(path)
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
-

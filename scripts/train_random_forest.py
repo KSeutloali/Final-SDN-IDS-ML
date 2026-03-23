@@ -25,6 +25,9 @@ import json
 from pathlib import Path
 import sys
 
+if __package__ in (None, ""):
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
 from ml.feature_extractor import RUNTIME_FEATURE_NAMES
 from ml.model_loader import save_model_bundle
 from ml.runtime_forest import export_random_forest_model
@@ -395,6 +398,34 @@ def build_runtime_training_frame(pandas_module, dataframe, args):
         if group_column:
             groupby_keys.insert(0, "group_id")
 
+        pair_keys = list(groupby_keys) + ["dst_ip"]
+        pair_aggregated = grouped_frame.groupby(pair_keys, as_index=False).agg(
+            syn_counts=("syn_counts", "sum"),
+            rst_counts=("rst_counts", "sum"),
+            tcp_packets=("tcp_indicator", "sum"),
+        )
+        reverse_responses = pair_aggregated[list(pair_keys) + ["tcp_packets"]].rename(
+            columns={
+                "src_ip": "dst_ip",
+                "dst_ip": "src_ip",
+                "tcp_packets": "reverse_tcp_packets",
+            }
+        )
+        pair_aggregated = pair_aggregated.merge(
+            reverse_responses,
+            on=pair_keys,
+            how="left",
+        )
+        pair_aggregated["reverse_tcp_packets"] = pair_aggregated["reverse_tcp_packets"].fillna(0.0)
+        pair_aggregated["unanswered_syn_count"] = (
+            pair_aggregated["syn_counts"]
+            - pair_aggregated["rst_counts"]
+            - pair_aggregated["reverse_tcp_packets"]
+        ).clip(lower=0.0)
+        unanswered_counts = (
+            pair_aggregated.groupby(groupby_keys, as_index=False)["unanswered_syn_count"].sum()
+        )
+
         aggregated = grouped_frame.groupby(groupby_keys, as_index=False).agg(
             packet_count=("packet_count", "sum"),
             byte_count=("byte_count", "sum"),
@@ -408,6 +439,12 @@ def build_runtime_training_frame(pandas_module, dataframe, args):
             failed_connections=("rst_counts", "sum"),
             malicious_mask=("malicious_mask", "max"),
         )
+        aggregated = aggregated.merge(
+            unanswered_counts,
+            on=groupby_keys,
+            how="left",
+        )
+        aggregated["unanswered_syn_count"] = aggregated["unanswered_syn_count"].fillna(0.0)
         observation_window = float(args.window_seconds)
         feature_frame = pandas_module.DataFrame(
             {
@@ -415,6 +452,10 @@ def build_runtime_training_frame(pandas_module, dataframe, args):
                 "byte_count": aggregated["byte_count"].astype("float64"),
                 "unique_destination_ports": aggregated["unique_destination_ports"].astype("float64"),
                 "unique_destination_ips": aggregated["unique_destination_ips"].astype("float64"),
+                "destination_port_fanout_ratio": (
+                    aggregated["unique_destination_ports"]
+                    / aggregated["connection_attempts"].clip(lower=1.0)
+                ),
                 "connection_rate": aggregated["connection_attempts"] / observation_window,
                 "syn_rate": aggregated["syn_counts"] / observation_window,
                 "icmp_rate": aggregated["icmp_packets"] / observation_window,
@@ -425,6 +466,11 @@ def build_runtime_training_frame(pandas_module, dataframe, args):
                 "packet_rate": aggregated["packet_count"] / observation_window,
                 "bytes_per_second": aggregated["byte_count"] / observation_window,
                 "failed_connection_rate": aggregated["failed_connections"] / observation_window,
+                "unanswered_syn_rate": aggregated["unanswered_syn_count"] / observation_window,
+                "unanswered_syn_ratio": (
+                    aggregated["unanswered_syn_count"]
+                    / aggregated["syn_counts"].clip(lower=1.0)
+                ).clip(upper=1.0),
             }
         )
         labels = aggregated["malicious_mask"].map({1: "malicious", 0: "benign"})
@@ -441,6 +487,7 @@ def build_runtime_training_frame(pandas_module, dataframe, args):
                 "unique_destination_ips": (
                     _text_series(pandas_module, dataframe, dst_ip_column, "").ne("")
                 ).astype("float64"),
+                "destination_port_fanout_ratio": 1.0,
                 "connection_rate": 1.0 / duration_series,
                 "syn_rate": syn_counts / duration_series,
                 "icmp_rate": icmp_indicator / duration_series,
@@ -451,6 +498,11 @@ def build_runtime_training_frame(pandas_module, dataframe, args):
                 "packet_rate": packet_count / duration_series,
                 "bytes_per_second": byte_count / duration_series,
                 "failed_connection_rate": rst_counts / duration_series,
+                "unanswered_syn_rate": (syn_counts - rst_counts).clip(lower=0.0) / duration_series,
+                "unanswered_syn_ratio": (
+                    (syn_counts - rst_counts).clip(lower=0.0)
+                    / syn_counts.clip(lower=1.0)
+                ).clip(upper=1.0),
             }
         )
         if group_column:
