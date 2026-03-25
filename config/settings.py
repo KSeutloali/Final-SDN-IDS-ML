@@ -404,7 +404,7 @@ def load_config():
             ).strip().lower(),
             model_path=_env_str(
                 "SDN_ML_MODEL_PATH",
-                "models/random_forest_ids.joblib",
+                "models/random_forest_runtime_final.joblib",
             ),
             dataset_path=_env_str(
                 "SDN_ML_DATASET_PATH",
@@ -436,7 +436,7 @@ def load_config():
             ),
             feature_window_seconds=_env_int(
                 "SDN_ML_FEATURE_WINDOW_SECONDS",
-                10,
+                3,
             ),
             unanswered_syn_timeout_seconds=_env_float(
                 "SDN_ML_UNANSWERED_SYN_TIMEOUT_SECONDS",
@@ -444,23 +444,23 @@ def load_config():
             ),
             minimum_packets_before_inference=_env_int(
                 "SDN_ML_MINIMUM_PACKETS_BEFORE_INFERENCE",
-                12,
+                6,
             ),
             inference_packet_stride=_env_int(
                 "SDN_ML_INFERENCE_PACKET_STRIDE",
-                6,
+                2,
             ),
             inference_cooldown_seconds=_env_float(
                 "SDN_ML_INFERENCE_COOLDOWN_SECONDS",
-                2.0,
+                0.5,
             ),
             confidence_threshold=_env_float(
                 "SDN_ML_CONFIDENCE_THRESHOLD",
-                0.75,
+                0.65,
             ),
             mitigation_threshold=_env_float(
                 "SDN_ML_MITIGATION_THRESHOLD",
-                0.92,
+                0.80,
             ),
             alert_suppression_seconds=_env_int(
                 "SDN_ML_ALERT_SUPPRESSION_SECONDS",

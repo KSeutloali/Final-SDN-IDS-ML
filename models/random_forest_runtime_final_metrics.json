@@ -1,0 +1,113 @@
+{
+  "class_balance": {
+    "benign": 297,
+    "malicious": 496
+  },
+  "class_weight": "balanced",
+  "combined_rows": 56843,
+  "dataset_paths": [
+    "datasets/merged_runtime_dataset.parquet"
+  ],
+  "features_used": [
+    "packet_count",
+    "byte_count",
+    "unique_destination_ports",
+    "unique_destination_ips",
+    "destination_port_fanout_ratio",
+    "connection_rate",
+    "syn_rate",
+    "icmp_rate",
+    "udp_rate",
+    "tcp_rate",
+    "average_packet_size",
+    "observation_window_seconds",
+    "packet_rate",
+    "bytes_per_second",
+    "failed_connection_rate",
+    "unanswered_syn_rate",
+    "unanswered_syn_ratio"
+  ],
+  "generated_at": "2026-03-25T13:59:08.389555+00:00",
+  "group_count": 64,
+  "input_row_counts": {
+    "datasets/merged_runtime_dataset.parquet": 56843
+  },
+  "max_depth": 20,
+  "min_samples_leaf": 2,
+  "min_samples_split": 5,
+  "n_estimators": 300,
+  "random_state": 42,
+  "report": {
+    "accuracy": 1.0,
+    "benign": {
+      "f1-score": 1.0,
+      "precision": 1.0,
+      "recall": 1.0,
+      "support": 44.0
+    },
+    "macro avg": {
+      "f1-score": 1.0,
+      "precision": 1.0,
+      "recall": 1.0,
+      "support": 114.0
+    },
+    "malicious": {
+      "f1-score": 1.0,
+      "precision": 1.0,
+      "recall": 1.0,
+      "support": 70.0
+    },
+    "weighted avg": {
+      "f1-score": 1.0,
+      "precision": 1.0,
+      "recall": 1.0,
+      "support": 114.0
+    }
+  },
+  "runtime_training_rows": 793,
+  "schema_notes": {
+    "dataset_profile": "cicids2018",
+    "group_split_column": "Run ID",
+    "group_split_ready": true,
+    "grouped_by_host_window": true,
+    "live_compatible_schema": true,
+    "missing_live_columns": [],
+    "runtime_feature_names": [
+      "packet_count",
+      "byte_count",
+      "unique_destination_ports",
+      "unique_destination_ips",
+      "destination_port_fanout_ratio",
+      "connection_rate",
+      "syn_rate",
+      "icmp_rate",
+      "udp_rate",
+      "tcp_rate",
+      "average_packet_size",
+      "observation_window_seconds",
+      "packet_rate",
+      "bytes_per_second",
+      "failed_connection_rate",
+      "unanswered_syn_rate",
+      "unanswered_syn_ratio"
+    ],
+    "source_columns": {
+      "byte_count": "Total Bytes",
+      "dst_ip": "Dst IP",
+      "dst_port": "Dst Port",
+      "flow_duration": null,
+      "group": "Run ID",
+      "label": "Label",
+      "packet_count": "Total Packets",
+      "protocol": "Protocol",
+      "rst_flags": "RST Flag Count",
+      "src_ip": "Src IP",
+      "syn_flags": "SYN Flag Count",
+      "timestamp": "Timestamp"
+    },
+    "window_seconds": 3
+  },
+  "split_mode": "grouped",
+  "test_rows": 114,
+  "train_rows": 679
+}

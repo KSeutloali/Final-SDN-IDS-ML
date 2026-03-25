@@ -51,8 +51,18 @@ class RuntimeDatasetRecorderTests(unittest.TestCase):
                         "label": "malicious",
                         "scenario": "port_scan",
                         "scenario_id": "port_scan_tcp",
+                        "scenario_family": "tcp_port_scan",
+                        "scenario_variant": "h3_to_h2_ports_1_20_t4",
+                        "traffic_class": "malicious",
                         "run_id": "run-001",
                         "collection_id": "collect-001",
+                        "src_host": "h3",
+                        "dst_host": "h2",
+                        "dst_service": "10.0.0.2:1-23/tcp",
+                        "duration_seconds": "8",
+                        "rate_parameter": "timing=T4,retries=0",
+                        "concurrency_level": "1",
+                        "capture_file": "captures/output/example.pcap",
                         "note": "unit-test",
                         "source": "manual",
                     }
@@ -73,8 +83,18 @@ class RuntimeDatasetRecorderTests(unittest.TestCase):
             self.assertEqual(row["Label"], "malicious")
             self.assertEqual(row["Scenario"], "port_scan")
             self.assertEqual(row["Scenario ID"], "port_scan_tcp")
+            self.assertEqual(row["Scenario Family"], "tcp_port_scan")
+            self.assertEqual(row["Scenario Variant"], "h3_to_h2_ports_1_20_t4")
+            self.assertEqual(row["Traffic Class"], "malicious")
             self.assertEqual(row["Run ID"], "run-001")
             self.assertEqual(row["Collection ID"], "collect-001")
+            self.assertEqual(row["Src Host"], "h3")
+            self.assertEqual(row["Dst Host"], "h2")
+            self.assertEqual(row["Dst Service"], "10.0.0.2:1-23/tcp")
+            self.assertEqual(row["Duration Seconds"], "8")
+            self.assertEqual(row["Rate Parameter"], "timing=T4,retries=0")
+            self.assertEqual(row["Concurrency Level"], "1")
+            self.assertEqual(row["Capture File"], "captures/output/example.pcap")
             self.assertEqual(row["Total Packets"], 1)
             self.assertEqual(row["Total Bytes"], 128)
             self.assertEqual(row["SYN Flag Count"], 1)

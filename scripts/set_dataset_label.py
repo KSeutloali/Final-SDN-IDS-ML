@@ -20,8 +20,50 @@ def parse_args():
     parser.add_argument("label", nargs="?", help="Label to apply, for example benign or malicious.")
     parser.add_argument("--scenario", default="", help="Optional scenario name.")
     parser.add_argument("--scenario-id", default="", help="Optional stable scenario family identifier.")
+    parser.add_argument(
+        "--scenario-family",
+        default="",
+        help="Optional high-level family such as tcp_port_scan or benign_http_repeated.",
+    )
+    parser.add_argument(
+        "--scenario-variant",
+        default="",
+        help="Optional concrete variant identifier for this run.",
+    )
+    parser.add_argument(
+        "--traffic-class",
+        default="",
+        help="Optional coarse class such as benign or malicious.",
+    )
     parser.add_argument("--run-id", default="", help="Optional unique run identifier.")
     parser.add_argument("--collection-id", default="", help="Optional collector session identifier.")
+    parser.add_argument("--src-host", default="", help="Optional source host label such as h1.")
+    parser.add_argument("--dst-host", default="", help="Optional destination host label or range.")
+    parser.add_argument(
+        "--dst-service",
+        default="",
+        help="Optional destination service label such as 10.0.0.2:80/http.",
+    )
+    parser.add_argument(
+        "--duration-seconds",
+        default="",
+        help="Optional intended scenario duration in seconds.",
+    )
+    parser.add_argument(
+        "--rate-parameter",
+        default="",
+        help="Optional free-form rate or pacing description.",
+    )
+    parser.add_argument(
+        "--concurrency-level",
+        default="",
+        help="Optional number of concurrent clients or coordinated actors.",
+    )
+    parser.add_argument(
+        "--capture-file",
+        default="",
+        help="Optional capture artifact path associated with this scenario.",
+    )
     parser.add_argument("--note", default="", help="Optional note stored with recorded rows.")
     parser.add_argument(
         "--label-file",
@@ -52,8 +94,18 @@ def main():
         "label": args.label,
         "scenario": args.scenario,
         "scenario_id": args.scenario_id,
+        "scenario_family": args.scenario_family,
+        "scenario_variant": args.scenario_variant,
+        "traffic_class": args.traffic_class,
         "run_id": args.run_id,
         "collection_id": args.collection_id,
+        "src_host": args.src_host,
+        "dst_host": args.dst_host,
+        "dst_service": args.dst_service,
+        "duration_seconds": args.duration_seconds,
+        "rate_parameter": args.rate_parameter,
+        "concurrency_level": args.concurrency_level,
+        "capture_file": args.capture_file,
         "note": args.note,
         "source": "manual",
         "updated_at": datetime.now(timezone.utc).isoformat(),

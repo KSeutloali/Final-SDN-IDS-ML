@@ -40,7 +40,7 @@ class ConfigLoadingTests(unittest.TestCase):
             self.assertEqual(config.ml.hybrid_policy, "alert_only")
             self.assertEqual(
                 config.ml.model_path,
-                "models/random_forest_ids.joblib",
+                "models/random_forest_runtime_final.joblib",
             )
             self.assertEqual(
                 config.ml.dataset_path,
@@ -51,6 +51,12 @@ class ConfigLoadingTests(unittest.TestCase):
             self.assertEqual(config.ml.dataset_label_path, "runtime/dataset_label.json")
             self.assertFalse(config.ml.dataset_record_unlabeled)
             self.assertFalse(config.ml.dataset_disable_mitigation)
+            self.assertEqual(config.ml.feature_window_seconds, 3)
+            self.assertEqual(config.ml.minimum_packets_before_inference, 6)
+            self.assertEqual(config.ml.inference_packet_stride, 2)
+            self.assertAlmostEqual(config.ml.inference_cooldown_seconds, 0.5)
+            self.assertAlmostEqual(config.ml.confidence_threshold, 0.65)
+            self.assertAlmostEqual(config.ml.mitigation_threshold, 0.80)
             self.assertAlmostEqual(config.ml.unanswered_syn_timeout_seconds, 1.5)
             self.assertEqual(config.ml.hybrid_correlation_window_seconds, 10)
             self.assertFalse(config.logging.log_allowed_traffic)

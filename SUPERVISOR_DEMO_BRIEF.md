@@ -69,6 +69,34 @@ controller.
 The packet capture subsystem runs continuously and preserves forensic snapshots
 when alerts are raised.
 
+### 2.1 Implementation evidence
+
+From [controller/main.py](controller/main.py) lines 85 to 131:
+
+```python
+restored_mode = self.ids_mode_store.current_mode(
+    default=self.ml_pipeline.status().get("selected_mode_api", "threshold"),
+)
+restore_result = self.ml_pipeline.set_mode(restored_mode)
+self._persist_ids_mode_state(
+    requested_by="controller_startup",
+    previous_mode=restore_result.get("previous_mode_api"),
+)
+...
+self._dashboard_heartbeat = hub.spawn(self._dashboard_heartbeat_loop)
+self._publish_dashboard_state(force=True)
+```
+
+Academic reasoning:
+
+- This is direct implementation evidence that the architecture is integrated and
+  stateful rather than a collection of disconnected scripts.
+- It supports the claim that IDS mode, monitoring, and controller startup are
+  part of one coherent runtime system.
+- In academic terms, this improves internal consistency because the controller,
+  dashboard state, and IDS mode restoration are all initialized through a single
+  controlled sequence.
+
 ## 3. End-to-End Runtime Flow
 
 The easiest way to explain the runtime behavior is as a sequence.
@@ -546,6 +574,35 @@ The split between controller and Mininet improves:
 The controller image remains focused on control-plane logic, while the Mininet
 image provides the data-plane environment and attack tooling.
 
+### 6.5 Implementation evidence
+
+From [docker-compose.yml](docker-compose.yml) lines 1 to 67:
+
+```yaml
+services:
+  controller:
+    build:
+      context: .
+      dockerfile: Dockerfile
+...
+  dashboard:
+    command: ["python", "-m", "monitoring.webapp"]
+...
+  mininet:
+    dockerfile: Dockerfile.mininet
+    privileged: true
+```
+
+Academic reasoning:
+
+- This is concrete evidence that the project separates the control plane, the
+  presentation layer, and the emulated data plane into distinct services.
+- That supports claims of modularity and reproducibility. Each service has a
+  clear role and can be reasoned about independently.
+- This also strengthens the engineering argument that the dashboard is not
+  embedded inside the controller, which reduces coupling and keeps the design
+  easier to defend.
+
 ## 7. Configuration Model
 
 The system is designed around centralized configuration plus runtime analyst
@@ -774,6 +831,62 @@ Instead, it looks like:
 This was one of the most important improvements to make the ML system better at
 recognizing port scans rather than mainly floods.
 
+### 12.4 Implementation evidence
+
+From [ml/feature_extractor.py](ml/feature_extractor.py) lines 1 to 5 and 12 to
+29:
+
+```python
+"""Live feature extraction for the optional ML-based IDS path.
+
+The controller cannot reproduce every flow feature available in offline datasets
+such as CIC. This module therefore focuses on statistics that are realistic to
+compute from controller-observed packets and short rolling windows.
+"""
+
+RUNTIME_FEATURE_NAMES = (
+    "packet_count",
+    "byte_count",
+    "unique_destination_ports",
+    "unique_destination_ips",
+    "destination_port_fanout_ratio",
+    ...
+    "failed_connection_rate",
+    "unanswered_syn_rate",
+    "unanswered_syn_ratio",
+)
+```
+
+From [ml/feature_extractor.py](ml/feature_extractor.py) lines 153 to 184:
+
+```python
+unanswered_count = float(
+    len(unanswered_window) + int(self.pending_attempt_counts.get(src_ip, 0))
+)
+destination_port_fanout_ratio = (
+    unique_destination_ports / connection_attempts
+    if connection_attempts
+    else 0.0
+)
+unanswered_syn_ratio = (
+    min(1.0, unanswered_count / syn_count)
+    if syn_count
+    else 0.0
+)
+...
+"unanswered_syn_rate": unanswered_count / observation_window_seconds,
+"unanswered_syn_ratio": unanswered_syn_ratio,
+```
+
+Academic reasoning:
+
+- These lines directly support the methodological claim that the feature space
+  was engineered around deployment-time observability, not around whichever
+  offline features happened to be available.
+- They also support the argument that scan detection required new silent-scan
+  features rather than relying only on explicit failure responses such as RSTs.
+- In research terms, this is a validity-driven feature-engineering decision.
+
 ## 13. Runtime Inference
 
 Runtime inference is handled by:
@@ -881,6 +994,37 @@ This means:
 This is a strong architectural point for the demo because it shows that the
 project separates offline ML engineering from online SDN operation cleanly.
 
+### 15.3 Implementation evidence
+
+From [ml/runtime_forest.py](ml/runtime_forest.py) lines 1 to 6:
+
+```python
+"""Portable Random Forest runtime helpers for controller-side inference.
+
+The live controller container intentionally stays lightweight and does not
+install the full offline training stack. This module provides a small
+pickle-friendly representation of a fitted scikit-learn Random Forest so the
+controller can perform inference without importing sklearn.
+"""
+```
+
+From [ml/runtime_forest.py](ml/runtime_forest.py) lines 89 to 111:
+
+```python
+def export_random_forest_model(classifier):
+    """Convert a fitted sklearn RandomForestClassifier into a portable model."""
+    ...
+    return RuntimeRandomForestModel(classes_=classes, trees=trees)
+```
+
+Academic reasoning:
+
+- These lines provide direct evidence that the runtime controller is intentionally
+  deployment-oriented rather than training-oriented.
+- This supports a strong systems argument: training complexity is kept offline,
+  while runtime inference is simplified for stability, reproducibility, and
+  operational clarity.
+
 ## 16. How Training Data Was Collected
 
 This is one of the most important parts of the project story.
@@ -977,6 +1121,72 @@ For example:
 That means the dataset is not static. It can be adapted to the weaknesses found
 during live testing.
 
+### 16.7 Implementation evidence
+
+From [ml/dataset_recorder.py](ml/dataset_recorder.py) lines 24 to 31 and 58 to
+76:
+
+```python
+class RuntimeDatasetRecorder(object):
+    """Write controller-observed packets into a live-compatible JSONL dataset."""
+...
+def record(self, packet_metadata, feature_snapshot=None):
+    if not self.enabled:
+        return False
+    ...
+    record = self._build_record(packet_metadata, feature_snapshot, label)
+    self._append_record(record)
+    return True
+```
+
+From [ml/dataset_recorder.py](ml/dataset_recorder.py) lines 115 to 140:
+
+```python
+record = {
+    "Timestamp": ...,
+    "Src IP": packet_metadata.src_ip,
+    "Dst IP": packet_metadata.dst_ip or "",
+    "Dst Port": ...,
+    "Protocol": packet_metadata.transport_protocol,
+    ...
+    "Label": record_label,
+    "Scenario": label.scenario if label is not None else "",
+    "Scenario ID": label.scenario_id if label is not None else "",
+    "Run ID": label.run_id if label is not None else "",
+}
+for feature_name, value in feature_values.items():
+    record["Runtime %s" % feature_name] = float(value)
+```
+
+From [scripts/collect_runtime_dataset.py](scripts/collect_runtime_dataset.py)
+lines 435 to 456:
+
+```python
+add_scenario(
+    label="malicious",
+    scenario_id="attack_port_scan_tcp_h3",
+    ...
+    command="/workspace/ryu-apps/attacks/port_scan.sh 10.0.0.2",
+    note="tcp_syn_port_scan",
+)
+add_scenario(
+    label="malicious",
+    scenario_id="attack_port_scan_udp_h3",
+    ...
+    command=("nmap -sU -Pn -T4 --max-retries 0 --top-ports 12 10.0.0.2"),
+    note="udp_service_probe",
+)
+```
+
+Academic reasoning:
+
+- These lines directly support the claim that the model training data was
+  collected from the live SDN system itself, with explicit labels and scenario
+  identities.
+- That improves experimental traceability and makes the final model easier to
+  justify, because the training data is visibly tied to known traffic patterns
+  in the same lab environment.
+
 ## 17. How the Model Was Trained
 
 Training is handled by `scripts/train_random_forest.py`.
@@ -1044,6 +1254,60 @@ After training, the sklearn model is exported into the lightweight runtime
 representation used by the controller.
 
 That keeps offline training and online deployment cleanly separated.
+
+### 17.6 Implementation evidence
+
+From [scripts/train_random_forest.py](scripts/train_random_forest.py) lines 134
+to 143:
+
+```python
+"""Resolve parquet columns and validate live-runtime compatibility.
+
+The SDN controller computes host-window features such as unique destination
+ports, unique destination IPs, protocol rates, and failed-connection rates.
+Training on parquet data that lacks those identifiers creates a misleading
+model: offline metrics may look acceptable, but live controller inference
+cannot match that feature space. The trainer therefore refuses such schemas
+by default.
+"""
+```
+
+From [scripts/train_random_forest.py](scripts/train_random_forest.py) lines 527
+to 610:
+
+```python
+def split_training_frame(...):
+    """Split samples using whole-run grouping when available."""
+...
+train_groups, test_groups = train_test_split_fn(
+    group_frame["group"],
+    test_size=effective_test_size,
+    random_state=args.random_state,
+    stratify=group_frame["label"],
+)
+```
+
+From [scripts/train_random_forest.py](scripts/train_random_forest.py) lines 746
+to 752:
+
+```python
+classifier = RandomForestClassifier(
+    n_estimators=args.n_estimators,
+    max_depth=args.max_depth,
+    random_state=args.random_state,
+    n_jobs=-1,
+    class_weight="balanced_subsample",
+)
+```
+
+Academic reasoning:
+
+- The schema-validation block is direct evidence that the training pipeline was
+  designed to protect deployment validity, not just maximize offline scores.
+- The grouped split supports a stronger evaluation design because it reduces the
+  chance of leakage between closely related runs.
+- The Random Forest configuration is appropriate for structured network-security
+  features and aligns with a project goal of explainable, lightweight ML.
 
 ## 18. The Final Model Story
 
@@ -1139,6 +1403,40 @@ That is a stronger claim than saying:
 
 > The model was trained on a public offline flow dataset whose telemetry does
 > not exactly match the live controller.
+
+### 19.6 Implementation evidence
+
+From [scripts/train_random_forest.py](scripts/train_random_forest.py) lines 9 to
+16:
+
+```python
+The CIC parquet schema can vary slightly across collections. The helpers below
+therefore:
+- normalize column names
+- search for a set of candidate column names
+- approximate runtime features when exact matches do not exist
+
+The trained model only uses features that can be approximated from live
+controller telemetry.
+```
+
+From [ml/feature_extractor.py](ml/feature_extractor.py) lines 1 to 5:
+
+```python
+The controller cannot reproduce every flow feature available in offline datasets
+such as CIC. This module therefore focuses on statistics that are realistic to
+compute from controller-observed packets and short rolling windows.
+```
+
+Academic reasoning:
+
+- These lines are the clearest code-level justification for not using the
+  downloaded CIC data directly as the final deployed model source.
+- The project did not reject CIC data out of convenience. It recognized a
+  construct-validity problem: a training feature space that cannot be reproduced
+  honestly at inference time is methodologically weak.
+- By collecting runtime-compatible data instead, the project improves alignment
+  between training conditions and deployment conditions.
 
 ### 19.4 Reason 4: practical performance
 

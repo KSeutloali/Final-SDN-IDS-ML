@@ -22,6 +22,7 @@ import argparse
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import json
+import os
 from pathlib import Path
 import sys
 
@@ -615,13 +616,33 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Train an offline Random Forest IDS model.")
     parser.add_argument(
         "--dataset",
-        default="datasets/cicids2018.parquet",
-        help="Path to the parquet dataset. CICIDS2018-style flow parquet is preferred.",
+        default=None,
+        help="Path to a parquet dataset. Preserved for backward compatibility.",
+    )
+    parser.add_argument(
+        "--merged-runtime-data",
+        default=None,
+        help="Primary merged runtime parquet dataset to train from.",
+    )
+    parser.add_argument(
+        "--additional-runtime-dir",
+        default=None,
+        help="Optional directory of additional runtime parquet files to append before training.",
     )
     parser.add_argument(
         "--model-out",
         default="models/random_forest_ids.joblib",
         help="Output path for the serialized model bundle.",
+    )
+    parser.add_argument(
+        "--metrics-out",
+        default=None,
+        help="Optional JSON metrics output path.",
+    )
+    parser.add_argument(
+        "--feature-manifest-out",
+        default=None,
+        help="Optional JSON feature manifest output path.",
     )
     parser.add_argument(
         "--window-seconds",
@@ -662,6 +683,23 @@ def parse_args():
     parser.add_argument("--random-state", type=int, default=42, help="Random seed.")
     parser.add_argument("--n-estimators", type=int, default=200, help="Random Forest tree count.")
     parser.add_argument("--max-depth", type=int, default=18, help="Random Forest max depth.")
+    parser.add_argument(
+        "--min-samples-split",
+        type=int,
+        default=2,
+        help="Random Forest min_samples_split value.",
+    )
+    parser.add_argument(
+        "--min-samples-leaf",
+        type=int,
+        default=1,
+        help="Random Forest min_samples_leaf value.",
+    )
+    parser.add_argument(
+        "--class-weight",
+        default="balanced_subsample",
+        help="Random Forest class_weight value. Use 'none' to disable.",
+    )
     return parser.parse_args()
 
 
@@ -672,6 +710,45 @@ def _read_parquet_schema_names(dataset_path):
         return None
 
     return list(parquet.read_schema(str(dataset_path)).names)
+
+
+def resolve_input_datasets(base_dataset_path, additional_runtime_dir):
+    dataset_paths = [Path(base_dataset_path)]
+    if additional_runtime_dir:
+        directory = Path(additional_runtime_dir)
+        if not directory.exists():
+            raise ValueError("Additional runtime directory not found: %s" % directory)
+        if not directory.is_dir():
+            raise ValueError("Additional runtime path is not a directory: %s" % directory)
+        for candidate in sorted(directory.glob("*.parquet")):
+            if candidate not in dataset_paths:
+                dataset_paths.append(candidate)
+    return dataset_paths
+
+
+def load_combined_dataset(pandas_module, dataset_paths):
+    frames = []
+    row_counts = {}
+    for dataset_path in dataset_paths:
+        dataframe = pandas_module.read_parquet(str(dataset_path))
+        dataframe = dataframe.copy()
+        if "Source Dataset" not in dataframe.columns:
+            dataframe["Source Dataset"] = str(dataset_path)
+        row_counts[str(dataset_path)] = int(len(dataframe))
+        frames.append(dataframe)
+    combined = pandas_module.concat(frames, ignore_index=True, sort=False)
+    return combined, row_counts
+
+
+def parse_class_weight(value):
+    if value is None:
+        return "balanced_subsample"
+    text = str(value).strip().lower()
+    if text in ("", "none", "null"):
+        return None
+    if text in ("balanced", "balanced_subsample"):
+        return text
+    return value
 
 
 def main():
@@ -690,10 +767,22 @@ def main():
         )
         return 1
 
-    dataset_path = Path(args.dataset)
+    dataset_argument = args.merged_runtime_data or args.dataset or "datasets/cicids2018.parquet"
+    dataset_path = Path(dataset_argument)
     if not dataset_path.exists():
         print("Dataset not found: %s" % dataset_path, file=sys.stderr)
         return 1
+
+    try:
+        dataset_paths = resolve_input_datasets(dataset_path, args.additional_runtime_dir)
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+
+    for candidate in dataset_paths:
+        if not candidate.exists():
+            print("Dataset not found: %s" % candidate, file=sys.stderr)
+            return 1
 
     schema_names = _read_parquet_schema_names(dataset_path)
     if schema_names is not None:
@@ -703,7 +792,7 @@ def main():
             print(str(exc), file=sys.stderr)
             return 1
 
-    dataframe = pd.read_parquet(str(dataset_path))
+    dataframe, input_row_counts = load_combined_dataset(pd, dataset_paths)
     feature_frame, label_series, groups, metadata = build_runtime_training_frame(pd, dataframe, args)
     if feature_frame.empty:
         print("No usable rows were extracted from the dataset.", file=sys.stderr)
@@ -719,6 +808,8 @@ def main():
     if label_series.nunique() < 2:
         print("Need at least two label classes after preprocessing.", file=sys.stderr)
         return 1
+
+    normalized_class_balance = label_series.value_counts().to_dict()
 
     split_mode = args.split_mode
     if split_mode == "auto":
@@ -746,9 +837,11 @@ def main():
     classifier = RandomForestClassifier(
         n_estimators=args.n_estimators,
         max_depth=args.max_depth,
+        min_samples_split=args.min_samples_split,
+        min_samples_leaf=args.min_samples_leaf,
         random_state=args.random_state,
         n_jobs=-1,
-        class_weight="balanced_subsample",
+        class_weight=parse_class_weight(args.class_weight),
     )
     classifier.fit(features_train, labels_train)
 
@@ -771,6 +864,9 @@ def main():
             "model_version": "1",
             "trained_at": datetime.now(timezone.utc).isoformat(),
             "dataset_path": str(dataset_path),
+            "dataset_paths": [str(path) for path in dataset_paths],
+            "input_row_counts": input_row_counts,
+            "combined_rows": int(len(dataframe)),
             "training_rows": int(len(features_train)),
             "test_rows": int(len(features_test)),
             "window_seconds": args.window_seconds,
@@ -778,13 +874,64 @@ def main():
             "tree_count": int(len(runtime_model.trees)),
             "split_mode": split_metadata.get("split_mode"),
             "group_count": split_metadata.get("group_count"),
+            "class_balance": normalized_class_balance,
+            "class_weight": parse_class_weight(args.class_weight),
+            "min_samples_split": args.min_samples_split,
+            "min_samples_leaf": args.min_samples_leaf,
             "report": report,
             "schema_notes": metadata,
         },
     }
     save_model_bundle(args.model_out, bundle)
 
+    metrics_payload = {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "dataset_paths": [str(path) for path in dataset_paths],
+        "input_row_counts": input_row_counts,
+        "combined_rows": int(len(dataframe)),
+        "runtime_training_rows": int(len(feature_frame)),
+        "class_balance": normalized_class_balance,
+        "features_used": list(RUNTIME_FEATURE_NAMES),
+        "split_mode": split_metadata.get("split_mode"),
+        "group_count": split_metadata.get("group_count"),
+        "train_rows": int(len(features_train)),
+        "test_rows": int(len(features_test)),
+        "random_state": args.random_state,
+        "n_estimators": args.n_estimators,
+        "max_depth": args.max_depth,
+        "min_samples_split": args.min_samples_split,
+        "min_samples_leaf": args.min_samples_leaf,
+        "class_weight": parse_class_weight(args.class_weight),
+        "report": report,
+        "schema_notes": metadata,
+    }
+    if args.metrics_out:
+        metrics_path = Path(args.metrics_out)
+        metrics_path.parent.mkdir(parents=True, exist_ok=True)
+        metrics_path.write_text(json.dumps(metrics_payload, indent=2, sort_keys=True))
+
+    feature_manifest = {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "dataset_paths": [str(path) for path in dataset_paths],
+        "runtime_feature_names": list(RUNTIME_FEATURE_NAMES),
+        "runtime_feature_count": len(RUNTIME_FEATURE_NAMES),
+        "schema_notes": metadata,
+    }
+    if args.feature_manifest_out:
+        feature_manifest_path = Path(args.feature_manifest_out)
+        feature_manifest_path.parent.mkdir(parents=True, exist_ok=True)
+        feature_manifest_path.write_text(json.dumps(feature_manifest, indent=2, sort_keys=True))
+
     print("Saved model bundle to %s" % args.model_out)
+    if args.metrics_out:
+        print("Saved metrics to %s" % args.metrics_out)
+    if args.feature_manifest_out:
+        print("Saved feature manifest to %s" % args.feature_manifest_out)
+    print("Input datasets:")
+    for path in dataset_paths:
+        print("- %s (%s rows)" % (path, input_row_counts.get(str(path), 0)))
+    print("Class balance: %s" % json.dumps(normalized_class_balance, sort_keys=True))
+    print("Features used: %s" % ", ".join(RUNTIME_FEATURE_NAMES))
     print("Training rows: %s" % len(features_train))
     print("Test rows: %s" % len(features_test))
     print("Split mode: %s" % split_metadata.get("split_mode"))

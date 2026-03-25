@@ -15,8 +15,18 @@ class DatasetLabel(object):
     label: str
     scenario: str = ""
     scenario_id: str = ""
+    scenario_family: str = ""
+    scenario_variant: str = ""
+    traffic_class: str = ""
     run_id: str = ""
     collection_id: str = ""
+    src_host: str = ""
+    dst_host: str = ""
+    dst_service: str = ""
+    duration_seconds: str = ""
+    rate_parameter: str = ""
+    concurrency_level: str = ""
+    capture_file: str = ""
     note: str = ""
     source: str = "manual"
 
@@ -101,8 +111,18 @@ class RuntimeDatasetRecorder(object):
             label=label_value,
             scenario=str(payload.get("scenario", "")).strip(),
             scenario_id=str(payload.get("scenario_id", "")).strip(),
+            scenario_family=str(payload.get("scenario_family", "")).strip(),
+            scenario_variant=str(payload.get("scenario_variant", "")).strip(),
+            traffic_class=str(payload.get("traffic_class", "")).strip(),
             run_id=str(payload.get("run_id", "")).strip(),
             collection_id=str(payload.get("collection_id", "")).strip(),
+            src_host=str(payload.get("src_host", "")).strip(),
+            dst_host=str(payload.get("dst_host", "")).strip(),
+            dst_service=str(payload.get("dst_service", "")).strip(),
+            duration_seconds=str(payload.get("duration_seconds", "")).strip(),
+            rate_parameter=str(payload.get("rate_parameter", "")).strip(),
+            concurrency_level=str(payload.get("concurrency_level", "")).strip(),
+            capture_file=str(payload.get("capture_file", "")).strip(),
             note=str(payload.get("note", "")).strip(),
             source=str(payload.get("source", "manual")).strip() or "manual",
         )
@@ -128,8 +148,18 @@ class RuntimeDatasetRecorder(object):
             "Label": record_label,
             "Scenario": label.scenario if label is not None else "",
             "Scenario ID": label.scenario_id if label is not None else "",
+            "Scenario Family": label.scenario_family if label is not None else "",
+            "Scenario Variant": label.scenario_variant if label is not None else "",
+            "Traffic Class": label.traffic_class if label is not None else "",
             "Run ID": label.run_id if label is not None else "",
             "Collection ID": label.collection_id if label is not None else "",
+            "Src Host": label.src_host if label is not None else "",
+            "Dst Host": label.dst_host if label is not None else "",
+            "Dst Service": label.dst_service if label is not None else "",
+            "Duration Seconds": label.duration_seconds if label is not None else "",
+            "Rate Parameter": label.rate_parameter if label is not None else "",
+            "Concurrency Level": label.concurrency_level if label is not None else "",
+            "Capture File": label.capture_file if label is not None else "",
             "Label Source": label.source if label is not None else "none",
             "Note": label.note if label is not None else "",
             "DPID": getattr(packet_metadata, "dpid", ""),
