@@ -121,16 +121,33 @@ class DashboardConfig:
 class IDSConfig:
     enabled: bool = True
     inspect_tcp_udp_packets: bool = True
+    # Keep recon-prone traffic on the controller path long enough for threshold IDS.
+    keep_tcp_syn_packets_visible: bool = True
+    keep_udp_probe_packets_visible: bool = True
+    keep_icmp_echo_requests_visible: bool = True
+    udp_fastpath_ports: Tuple[int, ...] = field(default_factory=tuple)
     packet_rate_window_seconds: int = 5
     packet_rate_threshold: int = 250
     syn_rate_window_seconds: int = 5
     syn_rate_threshold: int = 100
     scan_window_seconds: int = 10
-    unique_destination_ports_threshold: int = 12
-    unique_destination_hosts_threshold: int = 6
+    unique_destination_ports_threshold: int = 6
+    unique_destination_hosts_threshold: int = 4
+    tcp_scan_unique_destination_ports_threshold: int = 4
+    tcp_scan_probe_threshold: int = 4
+    udp_scan_unique_destination_ports_threshold: int = 3
+    udp_scan_probe_threshold: int = 3
+    icmp_sweep_unique_destination_hosts_threshold: int = 4
+    icmp_sweep_probe_threshold: int = 4
+    combined_recon_unique_destination_hosts_threshold: int = 3
+    combined_recon_unique_destination_ports_threshold: int = 3
+    combined_recon_probe_threshold: int = 4
     failed_connection_window_seconds: int = 10
     failed_connection_threshold: int = 8
     connection_attempt_window_seconds: int = 15
+    unanswered_syn_window_seconds: int = 10
+    unanswered_syn_threshold: int = 4
+    unanswered_syn_timeout_seconds: float = 1.5
     alert_suppression_seconds: int = 20
 
 
@@ -183,8 +200,12 @@ class MLConfig:
     inference_cooldown_seconds: float = 2.0
     confidence_threshold: float = 0.75
     mitigation_threshold: float = 0.92
+    alert_only_threshold: float = 0.55
     alert_suppression_seconds: int = 20
     hybrid_correlation_window_seconds: int = 10
+    ml_only_escalation_count: int = 3
+    ml_only_escalation_enabled: bool = False
+    capture_on_ml_only_alert: bool = True
     positive_labels: Tuple[str, ...] = (
         "attack",
         "malicious",
@@ -315,6 +336,22 @@ def load_config():
                 "SDN_IDS_INSPECT_TCP_UDP_PACKETS",
                 True,
             ),
+            keep_tcp_syn_packets_visible=_env_bool(
+                "SDN_IDS_KEEP_TCP_SYN_PACKETS_VISIBLE",
+                True,
+            ),
+            keep_udp_probe_packets_visible=_env_bool(
+                "SDN_IDS_KEEP_UDP_PROBE_PACKETS_VISIBLE",
+                True,
+            ),
+            keep_icmp_echo_requests_visible=_env_bool(
+                "SDN_IDS_KEEP_ICMP_ECHO_REQUESTS_VISIBLE",
+                True,
+            ),
+            udp_fastpath_ports=_env_int_tuple(
+                "SDN_IDS_UDP_FASTPATH_PORTS",
+                (),
+            ),
             packet_rate_window_seconds=_env_int(
                 "SDN_IDS_PACKET_RATE_WINDOW_SECONDS",
                 5,
@@ -337,11 +374,47 @@ def load_config():
             ),
             unique_destination_ports_threshold=_env_int(
                 "SDN_IDS_UNIQUE_DESTINATION_PORTS_THRESHOLD",
-                12,
+                6,
             ),
             unique_destination_hosts_threshold=_env_int(
                 "SDN_IDS_UNIQUE_DESTINATION_HOSTS_THRESHOLD",
-                6,
+                4,
+            ),
+            tcp_scan_unique_destination_ports_threshold=_env_int(
+                "SDN_IDS_TCP_SCAN_UNIQUE_DESTINATION_PORTS_THRESHOLD",
+                4,
+            ),
+            tcp_scan_probe_threshold=_env_int(
+                "SDN_IDS_TCP_SCAN_PROBE_THRESHOLD",
+                4,
+            ),
+            udp_scan_unique_destination_ports_threshold=_env_int(
+                "SDN_IDS_UDP_SCAN_UNIQUE_DESTINATION_PORTS_THRESHOLD",
+                3,
+            ),
+            udp_scan_probe_threshold=_env_int(
+                "SDN_IDS_UDP_SCAN_PROBE_THRESHOLD",
+                3,
+            ),
+            icmp_sweep_unique_destination_hosts_threshold=_env_int(
+                "SDN_IDS_ICMP_SWEEP_UNIQUE_DESTINATION_HOSTS_THRESHOLD",
+                4,
+            ),
+            icmp_sweep_probe_threshold=_env_int(
+                "SDN_IDS_ICMP_SWEEP_PROBE_THRESHOLD",
+                4,
+            ),
+            combined_recon_unique_destination_hosts_threshold=_env_int(
+                "SDN_IDS_COMBINED_RECON_UNIQUE_DESTINATION_HOSTS_THRESHOLD",
+                3,
+            ),
+            combined_recon_unique_destination_ports_threshold=_env_int(
+                "SDN_IDS_COMBINED_RECON_UNIQUE_DESTINATION_PORTS_THRESHOLD",
+                3,
+            ),
+            combined_recon_probe_threshold=_env_int(
+                "SDN_IDS_COMBINED_RECON_PROBE_THRESHOLD",
+                4,
             ),
             failed_connection_window_seconds=_env_int(
                 "SDN_IDS_FAILED_CONNECTION_WINDOW_SECONDS",
@@ -354,6 +427,18 @@ def load_config():
             connection_attempt_window_seconds=_env_int(
                 "SDN_IDS_CONNECTION_ATTEMPT_WINDOW_SECONDS",
                 15,
+            ),
+            unanswered_syn_window_seconds=_env_int(
+                "SDN_IDS_UNANSWERED_SYN_WINDOW_SECONDS",
+                10,
+            ),
+            unanswered_syn_threshold=_env_int(
+                "SDN_IDS_UNANSWERED_SYN_THRESHOLD",
+                4,
+            ),
+            unanswered_syn_timeout_seconds=_env_float(
+                "SDN_IDS_UNANSWERED_SYN_TIMEOUT_SECONDS",
+                1.5,
             ),
             alert_suppression_seconds=_env_int(
                 "SDN_IDS_ALERT_SUPPRESSION_SECONDS",
@@ -462,6 +547,10 @@ def load_config():
                 "SDN_ML_MITIGATION_THRESHOLD",
                 0.80,
             ),
+            alert_only_threshold=_env_float(
+                "SDN_ML_ALERT_ONLY_THRESHOLD",
+                0.55,
+            ),
             alert_suppression_seconds=_env_int(
                 "SDN_ML_ALERT_SUPPRESSION_SECONDS",
                 20,
@@ -469,6 +558,18 @@ def load_config():
             hybrid_correlation_window_seconds=_env_int(
                 "SDN_ML_HYBRID_CORRELATION_WINDOW_SECONDS",
                 10,
+            ),
+            ml_only_escalation_count=_env_int(
+                "SDN_ML_ONLY_ESCALATION_COUNT",
+                3,
+            ),
+            ml_only_escalation_enabled=_env_bool(
+                "SDN_ML_ONLY_ESCALATION_ENABLED",
+                False,
+            ),
+            capture_on_ml_only_alert=_env_bool(
+                "SDN_ML_CAPTURE_ON_ML_ONLY_ALERT",
+                True,
             ),
             positive_labels=_env_tuple(
                 "SDN_ML_POSITIVE_LABELS",

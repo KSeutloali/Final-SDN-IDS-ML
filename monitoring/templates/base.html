@@ -4,10 +4,21 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>{{ page_title }} · {{ dashboard_title }}</title>
-    <link rel="stylesheet" href="{{ url_for('static', filename='styles.css', v='20260319b') }}">
+    <script>
+      (function () {
+        try {
+          if (window.localStorage.getItem("sdn-dashboard-sidebar-collapsed") === "true") {
+            document.documentElement.classList.add("sidebar-collapsed");
+          }
+        } catch (error) {
+          // Ignore storage access issues and fall back to the expanded sidebar.
+        }
+      })();
+    </script>
+    <link rel="stylesheet" href="{{ url_for('static', filename='styles.css', v='20260408n') }}">
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js" defer></script>
     <script src="{{ url_for('static', filename='chart-fallback.js', v='20260319b') }}" defer></script>
-    <script src="{{ url_for('static', filename='dashboard.js', v='20260319b') }}" defer></script>
+    <script src="{{ url_for('static', filename='dashboard.js', v='20260408m') }}" defer></script>
   </head>
   <body
     data-base-path="{{ base_path }}"
@@ -17,26 +28,44 @@
   >
     <div class="app-shell">
       <aside class="sidebar" id="sidebar">
-        <div class="sidebar__brand">
-          <div class="brand-mark">SDN</div>
-          <div>
-            <div class="brand-title">{{ dashboard_title }}</div>
-            <div class="brand-subtitle">Security Analytics Console</div>
+        <div class="sidebar__header">
+          <div class="sidebar__brand">
+            <div class="brand-mark">SDN</div>
+            <div class="sidebar__brand-copy">
+              <div class="brand-title">{{ dashboard_title }}</div>
+              <div class="brand-subtitle">Security operations</div>
+            </div>
           </div>
+          <button
+            class="sidebar__toggle js-sidebar-toggle"
+            id="sidebar-toggle"
+            type="button"
+            aria-controls="sidebar"
+            aria-expanded="true"
+            aria-label="Collapse sidebar"
+            title="Collapse sidebar"
+          >
+            <span class="sidebar__toggle-glyph" id="sidebar-toggle-glyph" aria-hidden="true">‹</span>
+            <span class="sr-only">Toggle sidebar</span>
+          </button>
         </div>
         <nav class="sidebar__nav" aria-label="Dashboard navigation">
           {% for item in navigation_items %}
           <a
             class="nav-link{% if item.name == page_name %} is-active{% endif %}"
             href="{{ item.href }}"
+            aria-label="{{ item.label }}"
+            title="{{ item.label }}"
+            {% if item.name == page_name %}aria-current="page"{% endif %}
           >
+            <span class="nav-link__icon" aria-hidden="true">{{ item.icon_svg|safe }}</span>
             <span class="nav-link__label">{{ item.label }}</span>
           </a>
           {% endfor %}
         </nav>
         <div class="sidebar__footer">
-          <div class="status-chip" id="sidebar-live-chip">Waiting for data</div>
-          <div class="sidebar__hint">Polling every {{ (poll_interval_ms / 1000)|round(1) }}s</div>
+          <div class="status-chip" id="sidebar-live-chip">Waiting</div>
+          <div class="sidebar__hint">Refresh {{ (poll_interval_ms / 1000)|round(1) }}s</div>
         </div>
       </aside>
 
@@ -44,7 +73,7 @@
         <header class="topbar">
           <div class="topbar__left">
             <div>
-              <div class="eyebrow">Live monitoring</div>
+              <div class="eyebrow">Operations</div>
               <h1>{{ page_title }}</h1>
               <p class="page-intro">{{ page_description }}</p>
             </div>
@@ -55,11 +84,11 @@
               <span class="badge badge--info" id="chrome-ml-mode">Threshold IDS</span>
             </div>
             <div class="topbar-stat">
-              <span class="topbar-stat__label">Last update</span>
+              <span class="topbar-stat__label">Updated</span>
               <span class="topbar-stat__value" id="chrome-last-updated">Waiting</span>
             </div>
             <div class="topbar-stat">
-              <span class="topbar-stat__label">Connection</span>
+              <span class="topbar-stat__label">State</span>
               <span class="badge badge--warning" id="chrome-live-status">Connecting</span>
             </div>
           </div>
@@ -87,7 +116,7 @@
             <span class="statusbar__value" id="footer-blocks">0</span>
           </div>
           <div class="statusbar__item">
-            <span class="statusbar__label">State file</span>
+            <span class="statusbar__label">State</span>
             <span class="statusbar__value">runtime/dashboard_state.json</span>
           </div>
         </footer>

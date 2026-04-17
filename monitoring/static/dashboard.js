@@ -1,6 +1,10 @@
 (function () {
   "use strict";
 
+  const SIDEBAR_STORAGE_KEY = "sdn-dashboard-sidebar-collapsed";
+  const SIDEBAR_MOBILE_MEDIA_QUERY = "(max-width: 960px)";
+  const CAPTURE_PAGE_SIZE = 5;
+
   const state = {
     charts: {},
     lastPayload: null,
@@ -10,6 +14,13 @@
     idsModeRequestInFlight: false,
     idsModeStatusMessage: "Ready",
     idsModeStatusTone: "success",
+    sidebarMediaQuery: null,
+    captureVisibleRows: {
+      snapshots: CAPTURE_PAGE_SIZE,
+      files: CAPTURE_PAGE_SIZE,
+    },
+    captureScrollbarDrag: null,
+    captureScrollbarReady: false,
   };
 
   document.addEventListener("DOMContentLoaded", function () {
@@ -18,8 +29,14 @@
       return;
     }
 
+    ensureSidebarToggle();
+    initializeSidebar();
+    initializeCaptureScrollbars();
+    markSidebarReady();
     document.addEventListener("click", handleActionClick);
     document.addEventListener("change", handleActionChange);
+    document.addEventListener("pointermove", handleCaptureScrollbarPointerMove);
+    document.addEventListener("pointerup", handleCaptureScrollbarPointerUp);
     startPolling();
   });
 
@@ -94,8 +111,8 @@
     if (sidebarChip) {
       sidebarChip.className = chipClassName;
       sidebarChip.textContent = connected
-        ? "Live data stream"
-        : "Waiting for controller state";
+        ? "Live"
+        : "Waiting";
     }
 
     if (error) {
@@ -282,6 +299,150 @@
 
     renderCaptureSessionsTable("captures-session-table", sessions);
     renderCaptureFilesTable("captures-file-table", files);
+    window.requestAnimationFrame(syncCaptureScrollbars);
+  }
+
+  function initializeCaptureScrollbars() {
+    const shells = document.querySelectorAll(".js-scroll-shell");
+    if (!shells.length) {
+      return;
+    }
+
+    shells.forEach(function (shell) {
+      if (shell.dataset.scrollbarBound === "true") {
+        return;
+      }
+
+      const layout = shell.closest(".js-scroll-layout");
+      const rail = layout ? layout.querySelector(".js-scroll-rail") : null;
+      const thumb = layout ? layout.querySelector(".js-scroll-thumb") : null;
+      if (!rail || !thumb) {
+        return;
+      }
+
+      shell.addEventListener("scroll", function () {
+        syncCaptureScrollbar(shell);
+      }, { passive: true });
+
+      rail.addEventListener("pointerdown", function (event) {
+        if (event.button !== 0) {
+          return;
+        }
+
+        const targetThumb = event.target.closest(".js-scroll-thumb");
+        if (!targetThumb) {
+          event.preventDefault();
+          jumpCaptureScrollbar(shell, rail, event.clientY);
+        }
+
+        startCaptureScrollbarDrag(event, shell, rail, thumb);
+      });
+
+      shell.dataset.scrollbarBound = "true";
+    });
+
+    if (!state.captureScrollbarReady) {
+      window.addEventListener("resize", syncCaptureScrollbars);
+      state.captureScrollbarReady = true;
+    }
+
+    syncCaptureScrollbars();
+  }
+
+  function syncCaptureScrollbars() {
+    document.querySelectorAll(".js-scroll-shell").forEach(function (shell) {
+      syncCaptureScrollbar(shell);
+    });
+  }
+
+  function syncCaptureScrollbar(shell) {
+    const layout = shell.closest(".js-scroll-layout");
+    const rail = layout ? layout.querySelector(".js-scroll-rail") : null;
+    const thumb = layout ? layout.querySelector(".js-scroll-thumb") : null;
+    if (!rail || !thumb) {
+      return;
+    }
+
+    const viewportHeight = shell.clientHeight;
+    const scrollHeight = shell.scrollHeight;
+    const maxScroll = Math.max(scrollHeight - viewportHeight, 0);
+    const trackHeight = rail.clientHeight;
+
+    if (!trackHeight) {
+      return;
+    }
+
+    const thumbHeight = maxScroll > 0
+      ? Math.min(trackHeight, Math.max(Math.round((viewportHeight / scrollHeight) * trackHeight), 44))
+      : trackHeight;
+    const maxThumbTravel = Math.max(trackHeight - thumbHeight, 0);
+    const thumbTop = maxScroll > 0
+      ? (shell.scrollTop / maxScroll) * maxThumbTravel
+      : 0;
+
+    thumb.style.height = thumbHeight + "px";
+    thumb.style.transform = "translateY(" + Math.round(thumbTop) + "px)";
+    rail.classList.toggle("scroll-rail--static", maxScroll <= 0);
+  }
+
+  function startCaptureScrollbarDrag(event, shell, rail, thumb) {
+    event.preventDefault();
+    state.captureScrollbarDrag = {
+      shell: shell,
+      rail: rail,
+      thumb: thumb,
+      startY: event.clientY,
+      startTop: currentCaptureThumbTop(thumb),
+    };
+  }
+
+  function jumpCaptureScrollbar(shell, rail, clientY) {
+    const thumb = rail.querySelector(".js-scroll-thumb");
+    if (!thumb) {
+      return;
+    }
+
+    const trackRect = rail.getBoundingClientRect();
+    const thumbHeight = thumb.offsetHeight || 44;
+    const targetTop = clampValue(clientY - trackRect.top - (thumbHeight / 2), 0, Math.max(trackRect.height - thumbHeight, 0));
+    applyCaptureThumbPosition(shell, rail, thumb, targetTop);
+  }
+
+  function handleCaptureScrollbarPointerMove(event) {
+    if (!state.captureScrollbarDrag) {
+      return;
+    }
+
+    const drag = state.captureScrollbarDrag;
+    const nextTop = drag.startTop + (event.clientY - drag.startY);
+    applyCaptureThumbPosition(drag.shell, drag.rail, drag.thumb, nextTop);
+  }
+
+  function handleCaptureScrollbarPointerUp() {
+    if (!state.captureScrollbarDrag) {
+      return;
+    }
+
+    state.captureScrollbarDrag = null;
+  }
+
+  function applyCaptureThumbPosition(shell, rail, thumb, requestedTop) {
+    const trackHeight = rail.clientHeight;
+    const thumbHeight = thumb.offsetHeight || 44;
+    const maxThumbTravel = Math.max(trackHeight - thumbHeight, 0);
+    const boundedTop = clampValue(requestedTop, 0, maxThumbTravel);
+    const maxScroll = Math.max(shell.scrollHeight - shell.clientHeight, 0);
+
+    thumb.style.transform = "translateY(" + Math.round(boundedTop) + "px)";
+    shell.scrollTop = maxThumbTravel > 0
+      ? (boundedTop / maxThumbTravel) * maxScroll
+      : 0;
+  }
+
+  function currentCaptureThumbTop(thumb) {
+    const transform = thumb.style.transform || "";
+    const match = transform.match(/translateY\(([-\d.]+)px\)/);
+    return match ? Number(match[1]) : 0;
   }
 
   function updateMlPage(payload) {
@@ -416,7 +577,7 @@
             "<td>" + escapeHtml(row.alert_type || "-") + "</td>" +
             "<td>" + escapeHtml(row.detector || "-") + "</td>" +
             "<td>" + escapeHtml(row.src_ip || "-") + "</td>" +
-            "<td class=\"table-wrap\">" + escapeHtml(row.reason || "-") + "</td>" +
+            "<td class=\"table-reason-cell\">" + renderEllipsisText(row.reason || "-", 58) + "</td>" +
             "<td>" + escapeHtml(row.quarantine_status || row.status || "-") + "</td>" +
             "<td>" + renderCaptureLink(row.related_capture) + "</td>" +
           "</tr>";
@@ -528,17 +689,18 @@
       return;
     }
 
-    tbody.innerHTML = rows.length
-      ? rows.map(function (row) {
+    const visibleRows = limitedCaptureRows("snapshots", rows);
+    tbody.innerHTML = visibleRows.length
+      ? visibleRows.map(function (row) {
           const statusBadge = row.status === "preserved"
             ? "<span class=\"badge badge--danger\">Preserved</span>"
             : "<span class=\"badge badge--neutral\">" + escapeHtml(row.status || "stored") + "</span>";
           return "<tr>" +
-            "<td>" + escapeHtml(row.snapshot_name || "-") + "</td>" +
-            "<td>" + escapeHtml(row.timestamp || "-") + "</td>" +
-            "<td>" + escapeHtml(row.source_ip || "-") + "</td>" +
-            "<td>" + escapeHtml(row.detector || "-") + "</td>" +
-            "<td>" + escapeHtml(row.alert_type || "-") + "</td>" +
+            "<td>" + renderEllipsisText(row.snapshot_name || "-", 42) + "</td>" +
+            "<td>" + renderEllipsisText(formatCaptureTimestamp(row.timestamp), 19, row.timestamp || "-") + "</td>" +
+            "<td>" + renderEllipsisText(row.source_ip || "-", 16) + "</td>" +
+            "<td>" + renderEllipsisText(row.detector || "-", 12) + "</td>" +
+            "<td>" + renderEllipsisText(row.alert_type || "-", 24) + "</td>" +
             "<td>" + formatNumber(row.file_count || 0) + "</td>" +
             "<td>" + escapeHtml(row.size_human || "0 B") + "</td>" +
             "<td>" + statusBadge + "</td>" +
@@ -546,6 +708,7 @@
           "</tr>";
         }).join("")
       : emptyRow(9, "No preserved alert snapshots yet.");
+    syncCaptureMoreButton("snapshots", rows.length);
   }
 
   function renderCaptureFilesTable(elementId, rows) {
@@ -554,8 +717,9 @@
       return;
     }
 
-    tbody.innerHTML = rows.length
-      ? rows.map(function (row) {
+    const visibleRows = limitedCaptureRows("files", rows);
+    tbody.innerHTML = visibleRows.length
+      ? visibleRows.map(function (row) {
           const downloadCell = row.download_path
             ? "<a class=\"table-link\" href=\"" + escapeAttribute(row.download_path) + "\">Download</a>"
             : "-";
@@ -563,7 +727,7 @@
             "<td>" + escapeHtml(row.session_name || "-") + "</td>" +
             "<td>" + escapeHtml(row.scenario || "-") + "</td>" +
             "<td>" + escapeHtml(row.interface || "-") + "</td>" +
-            "<td class=\"table-wrap\">" + escapeHtml(row.file_name || "-") + "</td>" +
+            "<td>" + renderEllipsisText(row.file_name || "-", 40) + "</td>" +
             "<td>" + escapeHtml(row.status || "-") + "</td>" +
             "<td>" + escapeHtml(row.size_human || "0 B") + "</td>" +
             "<td>" + escapeHtml(shortTimestamp(row.modified_at || row.timestamp || "-")) + "</td>" +
@@ -571,6 +735,47 @@
           "</tr>";
         }).join("")
       : emptyRow(8, "No capture files available.");
+    syncCaptureMoreButton("files", rows.length);
+  }
+
+  function limitedCaptureRows(section, rows) {
+    const visibleCount = captureVisibleCount(section, rows.length);
+    return rows.slice(0, visibleCount);
+  }
+
+  function captureVisibleCount(section, totalRows) {
+    const current = state.captureVisibleRows[section] || CAPTURE_PAGE_SIZE;
+    return Math.min(Math.max(current, CAPTURE_PAGE_SIZE), Math.max(totalRows, 0));
+  }
+
+  function revealMoreCaptureRows(button) {
+    const section = button.getAttribute("data-capture-section");
+    if (!section || !Object.prototype.hasOwnProperty.call(state.captureVisibleRows, section)) {
+      return;
+    }
+    state.captureVisibleRows[section] = (state.captureVisibleRows[section] || CAPTURE_PAGE_SIZE) + CAPTURE_PAGE_SIZE;
+    if (state.lastPayload) {
+      updateCapturesPage(state.lastPayload);
+    }
+  }
+
+  function syncCaptureMoreButton(section, totalRows) {
+    const button = document.getElementById(
+      section === "snapshots" ? "captures-snapshots-more" : "captures-files-more"
+    );
+    if (!button) {
+      return;
+    }
+
+    const visibleCount = captureVisibleCount(section, totalRows);
+    const remaining = Math.max(totalRows - visibleCount, 0);
+    if (remaining <= 0 || totalRows <= CAPTURE_PAGE_SIZE) {
+      button.hidden = true;
+      return;
+    }
+
+    button.hidden = false;
+    button.textContent = "Show " + Math.min(CAPTURE_PAGE_SIZE, remaining) + " more";
   }
 
   async function handleActionChange(event) {
@@ -636,6 +841,18 @@
   }
 
   async function handleActionClick(event) {
+    const sidebarToggle = event.target.closest(".js-sidebar-toggle");
+    if (sidebarToggle) {
+      toggleSidebar();
+      return;
+    }
+
+    const captureMoreButton = event.target.closest(".js-capture-more");
+    if (captureMoreButton) {
+      revealMoreCaptureRows(captureMoreButton);
+      return;
+    }
+
     const button = event.target.closest(".js-unblock-host");
     if (!button) {
       return;
@@ -705,6 +922,112 @@
     return new Promise(function (resolve) {
       window.setTimeout(resolve, delayMs);
     });
+  }
+
+  function initializeSidebar() {
+    if (typeof window.matchMedia === "function") {
+      state.sidebarMediaQuery = window.matchMedia(SIDEBAR_MOBILE_MEDIA_QUERY);
+      syncSidebarForViewport();
+      if (typeof state.sidebarMediaQuery.addEventListener === "function") {
+        state.sidebarMediaQuery.addEventListener("change", syncSidebarForViewport);
+      } else if (typeof state.sidebarMediaQuery.addListener === "function") {
+        state.sidebarMediaQuery.addListener(syncSidebarForViewport);
+      }
+      return;
+    }
+    applySidebarState(readSidebarPreference(), false);
+  }
+
+  function markSidebarReady() {
+    const root = document.documentElement;
+    if (!root) {
+      return;
+    }
+    window.requestAnimationFrame(function () {
+      root.classList.add("sidebar-ready");
+    });
+  }
+
+  function ensureSidebarToggle() {
+    const sidebar = document.getElementById("sidebar");
+    const header = sidebar ? sidebar.querySelector(".sidebar__header") : null;
+    if (!header) {
+      return;
+    }
+
+    let toggle = document.getElementById("sidebar-toggle");
+    if (!toggle) {
+      toggle = document.createElement("button");
+      toggle.className = "sidebar__toggle js-sidebar-toggle";
+      toggle.id = "sidebar-toggle";
+      toggle.type = "button";
+      toggle.setAttribute("aria-controls", "sidebar");
+      header.appendChild(toggle);
+    }
+
+    if (!document.getElementById("sidebar-toggle-glyph")) {
+      const glyph = document.createElement("span");
+      glyph.className = "sidebar__toggle-glyph";
+      glyph.id = "sidebar-toggle-glyph";
+      glyph.setAttribute("aria-hidden", "true");
+      glyph.textContent = "‹";
+      toggle.appendChild(glyph);
+    }
+
+    if (!toggle.querySelector(".sr-only")) {
+      const srOnly = document.createElement("span");
+      srOnly.className = "sr-only";
+      srOnly.textContent = "Toggle sidebar";
+      toggle.appendChild(srOnly);
+    }
+  }
+
+  function syncSidebarForViewport() {
+    applySidebarState(readSidebarPreference(), false);
+  }
+
+  function toggleSidebar() {
+    const shouldCollapse = !document.documentElement.classList.contains("sidebar-collapsed");
+    applySidebarState(shouldCollapse, true);
+  }
+
+  function applySidebarState(collapsed, persist) {
+    const root = document.documentElement;
+    const body = document.body;
+    const toggle = document.getElementById("sidebar-toggle");
+    const isCollapsed = Boolean(collapsed);
+    const label = isCollapsed ? "Expand sidebar" : "Collapse sidebar";
+
+    root.classList.toggle("sidebar-collapsed", isCollapsed);
+    if (body) {
+      body.classList.toggle("sidebar-collapsed", isCollapsed);
+    }
+
+    if (toggle) {
+      toggle.setAttribute("aria-expanded", String(!isCollapsed));
+      toggle.setAttribute("aria-label", label);
+      toggle.setAttribute("title", label);
+    }
+
+    if (persist) {
+      writeSidebarPreference(isCollapsed);
+    }
+  }
+
+  function readSidebarPreference() {
+    try {
+      return window.localStorage.getItem(SIDEBAR_STORAGE_KEY) === "true";
+    } catch (error) {
+      return false;
+    }
+  }
+
+  function writeSidebarPreference(collapsed) {
+    try {
+      window.localStorage.setItem(SIDEBAR_STORAGE_KEY, collapsed ? "true" : "false");
+    } catch (error) {
+      // Ignore localStorage failures and keep the current in-memory UI state.
+    }
   }
 
   function syncIdsModeControls(payload) {
@@ -868,18 +1191,18 @@
       plugins: {
         legend: {
           labels: {
-            color: "#d8e1eb",
+            color: themeColor("--chart-text", "#5d7087"),
           },
         },
       },
       scales: {
         x: {
-          ticks: { color: "#94a7bc" },
-          grid: { color: "rgba(148, 167, 188, 0.12)" },
+          ticks: { color: themeColor("--chart-text", "#5d7087") },
+          grid: { color: themeColor("--chart-grid", "rgba(148, 163, 184, 0.2)") },
         },
         y: {
-          ticks: { color: "#94a7bc" },
-          grid: { color: "rgba(148, 167, 188, 0.12)" },
+          ticks: { color: themeColor("--chart-text", "#5d7087") },
+          grid: { color: themeColor("--chart-grid", "rgba(148, 163, 184, 0.2)") },
         },
       },
     });
@@ -915,7 +1238,7 @@
         legend: {
           position: "bottom",
           labels: {
-            color: "#d8e1eb",
+            color: themeColor("--chart-text", "#5d7087"),
           },
         },
       },
@@ -999,6 +1322,14 @@
 
   function chartSignature(value) {
     return JSON.stringify(value || null);
+  }
+
+  function themeColor(variableName, fallback) {
+    if (!window.getComputedStyle) {
+      return fallback;
+    }
+    const value = window.getComputedStyle(document.documentElement).getPropertyValue(variableName);
+    return value ? (value.trim() || fallback) : fallback;
   }
 
   function datasetLine(label, values, color) {
@@ -1101,44 +1432,44 @@
       return (
         "Selected " +
         formatIdsModeLabel(selectedMode) +
-        ", effective " +
+        ", running " +
         formatIdsModeLabel(effectiveMode) +
-        " because the ML runtime is unavailable."
+        " because ML is unavailable."
       );
     }
     if (effectiveMode === "ml") {
-      return "ML-only inference is active. Threshold detections are bypassed.";
+      return "ML-only inference is active.";
     }
     if (effectiveMode === "hybrid") {
-      return "Threshold IDS and ML IDS run together with live hybrid correlation.";
+      return "Threshold and ML run together with live correlation.";
     }
-    return "Threshold-based inspection only. ML inference is bypassed.";
+    return "Threshold-only inspection is active.";
   }
 
   function idsModeAlertDescription(ml) {
     const effectiveMode = ml.effective_mode_api || normalizeIdsMode(ml.effective_mode || "threshold");
     if (effectiveMode === "ml") {
-      return "Alert stream reflects ML detections only.";
+      return "Feed shows ML detections only.";
     }
     if (effectiveMode === "hybrid") {
-      return "Alert stream includes threshold, ML, and hybrid correlation outcomes.";
+      return "Feed includes threshold, ML, and correlation events.";
     }
-    return "Alert stream reflects threshold detections only.";
+    return "Feed shows threshold detections only.";
   }
 
   function idsModeHelpText(ml) {
     const modelAvailable = !!ml.model_available;
     const selectedMode = ml.selected_mode_api || normalizeIdsMode(ml.selected_mode || "threshold");
     if (!modelAvailable) {
-      return "ML model is not loaded. Threshold IDS remains available, while ML and Hybrid selection are blocked.";
+      return "No runtime model is loaded. Threshold mode stays available.";
     }
     if (selectedMode === "hybrid") {
-      return "Hybrid keeps threshold IDS as the primary baseline and adds ML correlation and confidence-based response.";
+      return "Hybrid keeps the baseline detector and layers in ML correlation.";
     }
     if (selectedMode === "ml") {
-      return "ML IDS mode relies on live feature extraction and runtime model inference only.";
+      return "ML mode relies on live features and runtime inference only.";
     }
-    return "Threshold IDS mode keeps the explainable baseline detector active and bypasses ML inference.";
+    return "Threshold mode keeps the baseline detector active.";
   }
 
   function idsModeErrorMessage(error) {
@@ -1230,6 +1561,30 @@
     return shortTimestamp(value);
   }
 
+  function formatCaptureTimestamp(value) {
+    if (!value) {
+      return "-";
+    }
+
+    try {
+      const date = new Date(value);
+      if (Number.isNaN(date.getTime())) {
+        return String(value);
+      }
+      return [
+        date.getFullYear(),
+        padNumber(date.getMonth() + 1),
+        padNumber(date.getDate()),
+      ].join("-") + " " + [
+        padNumber(date.getHours()),
+        padNumber(date.getMinutes()),
+        padNumber(date.getSeconds()),
+      ].join(":");
+    } catch (error) {
+      return String(value);
+    }
+  }
+
   function shortTimestamp(value) {
     try {
       const date = new Date(value);
@@ -1240,6 +1595,34 @@
     } catch (error) {
       return value;
     }
+  }
+
+  function truncateText(value, maxLength) {
+    const text = value === null || value === undefined || value === ""
+      ? "-"
+      : String(value);
+    if (!maxLength || text.length <= maxLength) {
+      return text;
+    }
+    return text.slice(0, Math.max(0, maxLength - 3)).trimEnd() + "...";
+  }
+
+  function renderEllipsisText(value, maxLength, titleValue) {
+    const rawValue = value === null || value === undefined || value === ""
+      ? "-"
+      : String(value);
+    const title = titleValue === null || titleValue === undefined || titleValue === ""
+      ? rawValue
+      : String(titleValue);
+    return "<span class=\"table-ellipsis\" title=\"" +
+      escapeAttribute(title) +
+      "\">" +
+      escapeHtml(truncateText(rawValue, maxLength)) +
+      "</span>";
+  }
+
+  function padNumber(value) {
+    return String(value).padStart(2, "0");
   }
 
   function formatSettingValue(value) {
@@ -1259,6 +1642,10 @@
     return String(value)
       .replace(/_/g, " ")
       .replace(/\b\w/g, function (match) { return match.toUpperCase(); });
+  }
+
+  function clampValue(value, min, max) {
+    return Math.min(Math.max(value, min), max);
   }
 
   function emptyRow(colspan, message) {

@@ -3,39 +3,39 @@
 {% block content %}
 <section class="card-grid card-grid--metrics">
   <article class="metric-card">
-    <span class="metric-card__label">PacketIn Rate</span>
+    <span class="metric-card__label">PacketIn</span>
     <strong class="metric-card__value" id="perf-packet-rate">0 pkt/s</strong>
-    <span class="metric-card__meta">Controller-observed ingress pace</span>
+    <span class="metric-card__meta">Controller ingress pace</span>
   </article>
   <article class="metric-card">
-    <span class="metric-card__label">Flow Install Rate</span>
+    <span class="metric-card__label">Installs</span>
     <strong class="metric-card__value" id="perf-flow-rate">0 flow/s</strong>
-    <span class="metric-card__meta">Derived from recent flow event deltas</span>
+    <span class="metric-card__meta">Recent flow event delta</span>
   </article>
   <article class="metric-card">
-    <span class="metric-card__label">Controller Event Rate</span>
+    <span class="metric-card__label">Events</span>
     <strong class="metric-card__value" id="perf-event-rate">0 evt/s</strong>
-    <span class="metric-card__meta">Switch and lifecycle event processing</span>
+    <span class="metric-card__meta">Switch and lifecycle events</span>
   </article>
   <article class="metric-card">
-    <span class="metric-card__label">Flow Removals</span>
+    <span class="metric-card__label">Removals</span>
     <strong class="metric-card__value" id="perf-flow-removals">0</strong>
-    <span class="metric-card__meta">Timeout and delete events from switches</span>
+    <span class="metric-card__meta">Timeout and delete events</span>
   </article>
   <article class="metric-card metric-card--danger">
-    <span class="metric-card__label">Active Security Flows</span>
+    <span class="metric-card__label">Security Flows</span>
     <strong class="metric-card__value" id="perf-active-security-flows">0</strong>
-    <span class="metric-card__meta">Drop and mitigation flows currently active</span>
+    <span class="metric-card__meta">Active drop and mitigation flows</span>
   </article>
   <article class="metric-card">
-    <span class="metric-card__label">Active Flow Count</span>
+    <span class="metric-card__label">Active Flows</span>
     <strong class="metric-card__value" id="perf-active-flows">0</strong>
-    <span class="metric-card__meta">Tracked forwarding and security flow entries</span>
+    <span class="metric-card__meta">Tracked forwarding and security entries</span>
   </article>
   <article class="metric-card metric-card--warning">
-    <span class="metric-card__label">Active Quarantines</span>
+    <span class="metric-card__label">Active Blocks</span>
     <strong class="metric-card__value" id="perf-active-blocks">0</strong>
-    <span class="metric-card__meta">Hosts currently held until manual analyst release</span>
+    <span class="metric-card__meta">Hosts held until analyst release</span>
   </article>
 </section>
 
@@ -43,8 +43,8 @@
   <article class="panel">
     <div class="panel__header">
       <div>
-        <h2>Controller Throughput</h2>
-        <p>Packet and event handling rates derived from the shared state stream.</p>
+        <h2>Controller Rates</h2>
+        <p>Packet and event handling rates from the live state stream.</p>
       </div>
     </div>
     <div class="chart-shell">
@@ -55,7 +55,7 @@
     <div class="panel__header">
       <div>
         <h2>Flow Activity</h2>
-        <p>Installed flows, removals, active security flows, and active quarantines over time.</p>
+        <p>Installs, removals, security flows, and blocks over time.</p>
       </div>
     </div>
     <div class="chart-shell">
@@ -67,8 +67,8 @@
 <section class="panel">
   <div class="panel__header">
     <div>
-      <h2>Controller Activity Feed</h2>
-      <p>Recent datapath, baseline, and flow events from the controller.</p>
+      <h2>Activity Feed</h2>
+      <p>Recent datapath, baseline, and flow events.</p>
     </div>
   </div>
   <div class="table-shell">

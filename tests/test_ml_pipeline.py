@@ -52,6 +52,25 @@ class PacketStub(object):
 
 
 class MLPipelineTests(unittest.TestCase):
+    @staticmethod
+    def _threshold_context(**overrides):
+        payload = {
+            "threshold_triggered": False,
+            "threshold_reason": "",
+            "threshold_rule_family": "",
+            "threshold_severity": "",
+            "threshold_recent_event_count": 0,
+            "unanswered_syn_count": 0,
+            "scan_unique_destination_hosts": 0,
+            "scan_unique_destination_ports": 0,
+            "recon_suspicious": False,
+            "recon_suspicion_score": 0,
+            "recon_visible_traffic": True,
+            "forwarding_visibility": "tcp_syn_probe",
+        }
+        payload.update(overrides)
+        return payload
+
     def test_missing_model_falls_back_to_threshold_only(self):
         pipeline = MLIDSPipeline(
             MLConfig(
@@ -165,13 +184,105 @@ class MLPipelineTests(unittest.TestCase):
             result = pipeline.inspect(
                 PacketStub(timestamp=2.0),
                 threshold_alerts=[threshold_alert],
+                threshold_context=self._threshold_context(
+                    threshold_triggered=True,
+                    threshold_reason="tcp_scan_threshold_exceeded",
+                    threshold_rule_family="recon",
+                    threshold_severity="high",
+                    threshold_recent_event_count=1,
+                    unanswered_syn_count=4,
+                    scan_unique_destination_ports=4,
+                ),
             )
 
         self.assertIsNotNone(result.alert)
         self.assertFalse(result.alert.should_mitigate)
-        self.assertEqual(result.alert.decision, "confirmed_by_threshold")
+        self.assertEqual(result.alert.decision, "threshold_enriched_by_ml")
         self.assertEqual(result.alert.severity, "critical")
         self.assertTrue(result.alert.details["agreement_with_threshold"])
+        self.assertEqual(result.alert.details["correlation_status"], "known_class_match")
+
+    def test_low_confidence_recon_signal_can_raise_hybrid_alert_without_blocking(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            model_path = os.path.join(temp_dir, "rf.joblib")
+            save_model_bundle(
+                model_path,
+                {
+                    "model": FakeRandomForestModel(
+                        label="benign",
+                        malicious_probability=0.61,
+                    ),
+                    "feature_names": tuple(RUNTIME_FEATURE_NAMES),
+                    "positive_labels": ("malicious",),
+                    "metadata": {"model_name": "random_forest", "model_version": "1"},
+                },
+            )
+            pipeline = MLIDSPipeline(
+                MLConfig(
+                    enabled=True,
+                    mode="hybrid",
+                    hybrid_policy="alert_only",
+                    model_path=model_path,
+                    minimum_packets_before_inference=1,
+                    inference_packet_stride=1,
+                    inference_cooldown_seconds=0.0,
+                    confidence_threshold=0.70,
+                    alert_only_threshold=0.55,
+                    alert_suppression_seconds=0,
+                )
+            )
+
+            result = pipeline.inspect(
+                PacketStub(timestamp=3.0),
+                threshold_context=self._threshold_context(
+                    recon_suspicious=True,
+                    recon_suspicion_score=2,
+                    unanswered_syn_count=3,
+                    scan_unique_destination_ports=3,
+                ),
+            )
+
+        self.assertIsNotNone(result.alert)
+        self.assertFalse(result.alert.should_mitigate)
+        self.assertEqual(result.alert.decision, "threshold_enriched_by_ml")
+        self.assertEqual(result.alert.details["correlation_status"], "threshold_enriched_by_ml")
+        self.assertEqual(result.alert.reason, "subthreshold_recon_pattern_enriched_by_ml")
+
+    def test_ml_only_low_confidence_anomaly_stays_alert_only(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            model_path = os.path.join(temp_dir, "rf.joblib")
+            save_model_bundle(
+                model_path,
+                {
+                    "model": FakeRandomForestModel(
+                        label="benign",
+                        malicious_probability=0.6,
+                    ),
+                    "feature_names": tuple(RUNTIME_FEATURE_NAMES),
+                    "positive_labels": ("malicious",),
+                    "metadata": {"model_name": "random_forest", "model_version": "1"},
+                },
+            )
+            pipeline = MLIDSPipeline(
+                MLConfig(
+                    enabled=True,
+                    mode="ml_only",
+                    model_path=model_path,
+                    minimum_packets_before_inference=1,
+                    inference_packet_stride=1,
+                    inference_cooldown_seconds=0.0,
+                    confidence_threshold=0.70,
+                    alert_only_threshold=0.55,
+                    alert_suppression_seconds=0,
+                )
+            )
+
+            result = pipeline.inspect(PacketStub(timestamp=4.0))
+
+        self.assertIsNotNone(result.alert)
+        self.assertFalse(result.alert.should_mitigate)
+        self.assertEqual(result.alert.details["correlation_status"], "anomaly_only")
+        self.assertEqual(result.alert.decision, "anomaly_only_alert")
 
     def test_threshold_only_and_ml_only_correlations_expire_cleanly(self):
         pipeline = MLIDSPipeline(
@@ -239,6 +350,40 @@ class MLPipelineTests(unittest.TestCase):
         expired = pipeline.expire_correlations(16.0)
         self.assertEqual(len(expired), 1)
         self.assertEqual(expired[0].status, "disagreement")
+
+    def test_threshold_plus_ml_correlation_uses_layered_status(self):
+        pipeline = MLIDSPipeline(
+            MLConfig(
+                enabled=False,
+                hybrid_correlation_window_seconds=5,
+            )
+        )
+
+        threshold_alert = IDSAlert(
+            alert_type="port_scan_detected",
+            src_ip="10.0.0.9",
+            reason="tcp_scan_threshold_exceeded",
+            timestamp=10.0,
+        )
+        pipeline.handle_threshold_alert(threshold_alert)
+        ml_alert = type(
+            "Alert",
+            (),
+            {
+                "src_ip": "10.0.0.9",
+                "alert_type": "random_forest_detected",
+                "timestamp": 11.0,
+                "confidence": 0.91,
+                "suspicion_score": 0.93,
+                "reason": "threshold_triggered_with_ml_context",
+                "details": {"correlation_status": "known_class_match"},
+            },
+        )()
+
+        events = pipeline.handle_ml_alert(ml_alert)
+
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0].status, "known_class_match")
 
     def test_reset_runtime_session_clears_pending_runtime_state(self):
         with tempfile.TemporaryDirectory() as temp_dir:

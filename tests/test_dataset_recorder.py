@@ -70,7 +70,21 @@ class RuntimeDatasetRecorderTests(unittest.TestCase):
             )
 
             recorder = RuntimeDatasetRecorder(self._ml_config(output_path, label_path))
-            recorded = recorder.record(self._packet())
+            recorded = recorder.record(
+                self._packet(),
+                threshold_context={
+                    "threshold_triggered": True,
+                    "threshold_reason": "tcp_scan_threshold_exceeded",
+                    "threshold_rule_family": "recon",
+                    "threshold_severity": "high",
+                    "threshold_recent_event_count": 2,
+                    "unanswered_syn_count": 3,
+                    "scan_unique_destination_hosts": 1,
+                    "scan_unique_destination_ports": 4,
+                    "recon_visible_traffic": True,
+                    "forwarding_visibility": "tcp_syn_probe",
+                },
+            )
 
             self.assertTrue(recorded)
             rows = [json.loads(line) for line in output_path.read_text().splitlines() if line.strip()]
@@ -102,6 +116,11 @@ class RuntimeDatasetRecorderTests(unittest.TestCase):
             self.assertIn("Runtime unanswered_syn_rate", row)
             self.assertIn("Runtime unanswered_syn_ratio", row)
             self.assertIn("Runtime destination_port_fanout_ratio", row)
+            self.assertTrue(row["Threshold Triggered"])
+            self.assertEqual(row["Threshold Rule Family"], "recon")
+            self.assertEqual(row["Threshold Unanswered SYN Count"], 3)
+            self.assertTrue(row["Recon Visible Traffic"])
+            self.assertEqual(row["Forwarding Visibility"], "tcp_syn_probe")
 
     def test_record_skips_unlabeled_rows_by_default(self):
         with TemporaryDirectory() as temporary_directory:

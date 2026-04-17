@@ -65,7 +65,7 @@ class RuntimeDatasetRecorder(object):
     def current_label(self):
         return self._current_label()
 
-    def record(self, packet_metadata, feature_snapshot=None):
+    def record(self, packet_metadata, feature_snapshot=None, threshold_context=None):
         if not self.enabled:
             return False
         if packet_metadata is None or not getattr(packet_metadata, "is_ipv4", False):
@@ -82,7 +82,12 @@ class RuntimeDatasetRecorder(object):
         if feature_snapshot is None:
             return False
 
-        record = self._build_record(packet_metadata, feature_snapshot, label)
+        record = self._build_record(
+            packet_metadata,
+            feature_snapshot,
+            label,
+            threshold_context=threshold_context,
+        )
         self._append_record(record)
         return True
 
@@ -128,9 +133,10 @@ class RuntimeDatasetRecorder(object):
         )
         return self._cached_label
 
-    def _build_record(self, packet_metadata, feature_snapshot, label):
+    def _build_record(self, packet_metadata, feature_snapshot, label, threshold_context=None):
         feature_values = dict(feature_snapshot.feature_values)
         record_label = (label.label if label is not None else "unlabeled").strip() or "unlabeled"
+        threshold_context = dict(threshold_context or {})
 
         record = {
             "Timestamp": datetime.fromtimestamp(
@@ -168,6 +174,37 @@ class RuntimeDatasetRecorder(object):
 
         for feature_name, value in feature_values.items():
             record["Runtime %s" % feature_name] = float(value)
+        if threshold_context:
+            record["Threshold Triggered"] = bool(
+                threshold_context.get("threshold_triggered", False)
+            )
+            record["Threshold Reason"] = str(
+                threshold_context.get("threshold_reason", "")
+            )
+            record["Threshold Rule Family"] = str(
+                threshold_context.get("threshold_rule_family", "")
+            )
+            record["Threshold Severity"] = str(
+                threshold_context.get("threshold_severity", "")
+            )
+            record["Threshold Recent Event Count"] = int(
+                threshold_context.get("threshold_recent_event_count", 0) or 0
+            )
+            record["Threshold Unanswered SYN Count"] = int(
+                threshold_context.get("unanswered_syn_count", 0) or 0
+            )
+            record["Threshold Unique Destination Hosts"] = int(
+                threshold_context.get("scan_unique_destination_hosts", 0) or 0
+            )
+            record["Threshold Unique Destination Ports"] = int(
+                threshold_context.get("scan_unique_destination_ports", 0) or 0
+            )
+            record["Recon Visible Traffic"] = bool(
+                threshold_context.get("recon_visible_traffic", False)
+            )
+            record["Forwarding Visibility"] = str(
+                threshold_context.get("forwarding_visibility", "")
+            )
         return record
 
     def _append_record(self, record):

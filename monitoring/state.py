@@ -781,7 +781,13 @@ class DashboardDataAdapter(object):
                 elif category == "hybrid_correlation":
                     severity = (
                         "critical"
-                        if event.get("status") == "agreement"
+                        if event.get("status")
+                        in (
+                            "agreement",
+                            "threshold_plus_ml",
+                            "threshold_enriched_by_ml",
+                            "known_class_match",
+                        )
                         else "medium"
                     )
                 else:
@@ -1100,16 +1106,32 @@ class DashboardDataAdapter(object):
                 {
                     "enabled": True,
                     "inspect_tcp_udp_packets": True,
+                    "keep_tcp_syn_packets_visible": True,
+                    "keep_udp_probe_packets_visible": True,
+                    "keep_icmp_echo_requests_visible": True,
+                    "udp_fastpath_ports": (),
                     "packet_rate_window_seconds": 5,
                     "packet_rate_threshold": 250,
                     "syn_rate_window_seconds": 5,
                     "syn_rate_threshold": 100,
                     "scan_window_seconds": 10,
-                    "unique_destination_ports_threshold": 12,
-                    "unique_destination_hosts_threshold": 6,
+                    "unique_destination_ports_threshold": 6,
+                    "unique_destination_hosts_threshold": 4,
+                    "tcp_scan_unique_destination_ports_threshold": 4,
+                    "tcp_scan_probe_threshold": 4,
+                    "udp_scan_unique_destination_ports_threshold": 3,
+                    "udp_scan_probe_threshold": 3,
+                    "icmp_sweep_unique_destination_hosts_threshold": 4,
+                    "icmp_sweep_probe_threshold": 4,
+                    "combined_recon_unique_destination_hosts_threshold": 3,
+                    "combined_recon_unique_destination_ports_threshold": 3,
+                    "combined_recon_probe_threshold": 4,
                     "failed_connection_window_seconds": 10,
                     "failed_connection_threshold": 8,
                     "connection_attempt_window_seconds": 15,
+                    "unanswered_syn_window_seconds": 10,
+                    "unanswered_syn_threshold": 4,
+                    "unanswered_syn_timeout_seconds": 1.5,
                     "alert_suppression_seconds": 20,
                 },
             )(),
@@ -1210,6 +1232,22 @@ class DashboardDataAdapter(object):
             "ids": {
                 "enabled": ids_config.enabled,
                 "inspect_tcp_udp_packets": ids_config.inspect_tcp_udp_packets,
+                "keep_tcp_syn_packets_visible": getattr(
+                    ids_config,
+                    "keep_tcp_syn_packets_visible",
+                    True,
+                ),
+                "keep_udp_probe_packets_visible": getattr(
+                    ids_config,
+                    "keep_udp_probe_packets_visible",
+                    True,
+                ),
+                "keep_icmp_echo_requests_visible": getattr(
+                    ids_config,
+                    "keep_icmp_echo_requests_visible",
+                    True,
+                ),
+                "udp_fastpath_ports": list(getattr(ids_config, "udp_fastpath_ports", ())),
                 "packet_rate_window_seconds": ids_config.packet_rate_window_seconds,
                 "packet_rate_threshold": ids_config.packet_rate_threshold,
                 "syn_rate_window_seconds": ids_config.syn_rate_window_seconds,
@@ -1217,9 +1255,69 @@ class DashboardDataAdapter(object):
                 "scan_window_seconds": ids_config.scan_window_seconds,
                 "unique_destination_ports_threshold": ids_config.unique_destination_ports_threshold,
                 "unique_destination_hosts_threshold": ids_config.unique_destination_hosts_threshold,
+                "tcp_scan_unique_destination_ports_threshold": getattr(
+                    ids_config,
+                    "tcp_scan_unique_destination_ports_threshold",
+                    4,
+                ),
+                "tcp_scan_probe_threshold": getattr(
+                    ids_config,
+                    "tcp_scan_probe_threshold",
+                    4,
+                ),
+                "udp_scan_unique_destination_ports_threshold": getattr(
+                    ids_config,
+                    "udp_scan_unique_destination_ports_threshold",
+                    3,
+                ),
+                "udp_scan_probe_threshold": getattr(
+                    ids_config,
+                    "udp_scan_probe_threshold",
+                    3,
+                ),
+                "icmp_sweep_unique_destination_hosts_threshold": getattr(
+                    ids_config,
+                    "icmp_sweep_unique_destination_hosts_threshold",
+                    4,
+                ),
+                "icmp_sweep_probe_threshold": getattr(
+                    ids_config,
+                    "icmp_sweep_probe_threshold",
+                    4,
+                ),
+                "combined_recon_unique_destination_hosts_threshold": getattr(
+                    ids_config,
+                    "combined_recon_unique_destination_hosts_threshold",
+                    3,
+                ),
+                "combined_recon_unique_destination_ports_threshold": getattr(
+                    ids_config,
+                    "combined_recon_unique_destination_ports_threshold",
+                    3,
+                ),
+                "combined_recon_probe_threshold": getattr(
+                    ids_config,
+                    "combined_recon_probe_threshold",
+                    4,
+                ),
                 "failed_connection_window_seconds": ids_config.failed_connection_window_seconds,
                 "failed_connection_threshold": ids_config.failed_connection_threshold,
                 "connection_attempt_window_seconds": ids_config.connection_attempt_window_seconds,
+                "unanswered_syn_window_seconds": getattr(
+                    ids_config,
+                    "unanswered_syn_window_seconds",
+                    10,
+                ),
+                "unanswered_syn_threshold": getattr(
+                    ids_config,
+                    "unanswered_syn_threshold",
+                    4,
+                ),
+                "unanswered_syn_timeout_seconds": getattr(
+                    ids_config,
+                    "unanswered_syn_timeout_seconds",
+                    1.5,
+                ),
                 "alert_suppression_seconds": ids_config.alert_suppression_seconds,
             },
             "ml": {
@@ -1271,6 +1369,11 @@ class DashboardDataAdapter(object):
                     "mitigation_threshold",
                     0.92,
                 ),
+                "alert_only_threshold": getattr(
+                    ml_config,
+                    "alert_only_threshold",
+                    0.55,
+                ),
                 "alert_suppression_seconds": getattr(
                     ml_config,
                     "alert_suppression_seconds",
@@ -1280,6 +1383,21 @@ class DashboardDataAdapter(object):
                     ml_config,
                     "hybrid_correlation_window_seconds",
                     10,
+                ),
+                "ml_only_escalation_count": getattr(
+                    ml_config,
+                    "ml_only_escalation_count",
+                    3,
+                ),
+                "ml_only_escalation_enabled": getattr(
+                    ml_config,
+                    "ml_only_escalation_enabled",
+                    False,
+                ),
+                "capture_on_ml_only_alert": getattr(
+                    ml_config,
+                    "capture_on_ml_only_alert",
+                    True,
                 ),
             },
             "ids_runtime": {

@@ -24,6 +24,7 @@ from controller.events import (
     register_datapath,
     unregister_datapath,
 )
+from controller.forwarding_policy import classify_visibility, should_install_forward_flow
 from core.command_queue import ControllerCommandQueue
 from core.flow_manager import FlowManager
 from core.ids_mode import IDSModeStateStore
@@ -189,9 +190,16 @@ class SecurityController(app_manager.RyuApp):
         learn_host(self.state, packet_metadata)
         self.metrics.record_packet(packet_metadata)
         threshold_alerts = self._run_threshold_ids_hook(packet_metadata)
+        forwarding_visibility = classify_visibility(self.config.ids, packet_metadata)
+        threshold_context = self.ids.describe_source(
+            packet_metadata,
+            alerts=threshold_alerts,
+            forwarding_visibility=forwarding_visibility,
+        )
         ml_result = self.ml_pipeline.inspect(
             packet_metadata,
             threshold_alerts=threshold_alerts,
+            threshold_context=threshold_context,
         )
         if ml_result.prediction is not None:
             self.metrics.record_ml_prediction(ml_result.prediction)
@@ -201,6 +209,7 @@ class SecurityController(app_manager.RyuApp):
         self.dataset_recorder.record(
             packet_metadata,
             feature_snapshot=ml_result.feature_snapshot,
+            threshold_context=threshold_context,
         )
         self._handle_threshold_ids_alerts(threshold_alerts)
         self._handle_ml_alert(ml_result.alert)
@@ -338,7 +347,20 @@ class SecurityController(app_manager.RyuApp):
         if alert is None:
             return
 
-        snapshot = self._preserve_capture_snapshot(alert, detector="ml")
+        correlation_status = alert.details.get("correlation_status")
+        should_preserve_snapshot = True
+        if correlation_status in (
+            "threshold_plus_ml",
+            "threshold_enriched_by_ml",
+            "known_class_match",
+        ):
+            should_preserve_snapshot = False
+        elif correlation_status in ("ml_only", "anomaly_only"):
+            should_preserve_snapshot = bool(self.config.ml.capture_on_ml_only_alert)
+
+        snapshot = None
+        if should_preserve_snapshot:
+            snapshot = self._preserve_capture_snapshot(alert, detector="ml")
         self._handle_hybrid_correlation_events(
             self.ml_pipeline.handle_ml_alert(alert)
         )
@@ -671,9 +693,9 @@ class SecurityController(app_manager.RyuApp):
         )
 
     def _should_install_forward_flow(self, packet_metadata):
-        """Install forwarding flows while still exposing new L4 tuples to the IDS."""
+        """Install forwarding flows while keeping probe traffic controller-visible."""
 
-        return True
+        return should_install_forward_flow(self.config.ids, packet_metadata)
 
     def _dashboard_config_snapshot(self):
         return {
@@ -702,6 +724,10 @@ class SecurityController(app_manager.RyuApp):
             "ids": {
                 "enabled": self.config.ids.enabled,
                 "inspect_tcp_udp_packets": self.config.ids.inspect_tcp_udp_packets,
+                "keep_tcp_syn_packets_visible": self.config.ids.keep_tcp_syn_packets_visible,
+                "keep_udp_probe_packets_visible": self.config.ids.keep_udp_probe_packets_visible,
+                "keep_icmp_echo_requests_visible": self.config.ids.keep_icmp_echo_requests_visible,
+                "udp_fastpath_ports": list(self.config.ids.udp_fastpath_ports),
                 "packet_rate_window_seconds": self.config.ids.packet_rate_window_seconds,
                 "packet_rate_threshold": self.config.ids.packet_rate_threshold,
                 "syn_rate_window_seconds": self.config.ids.syn_rate_window_seconds,
@@ -709,9 +735,21 @@ class SecurityController(app_manager.RyuApp):
                 "scan_window_seconds": self.config.ids.scan_window_seconds,
                 "unique_destination_ports_threshold": self.config.ids.unique_destination_ports_threshold,
                 "unique_destination_hosts_threshold": self.config.ids.unique_destination_hosts_threshold,
+                "tcp_scan_unique_destination_ports_threshold": self.config.ids.tcp_scan_unique_destination_ports_threshold,
+                "tcp_scan_probe_threshold": self.config.ids.tcp_scan_probe_threshold,
+                "udp_scan_unique_destination_ports_threshold": self.config.ids.udp_scan_unique_destination_ports_threshold,
+                "udp_scan_probe_threshold": self.config.ids.udp_scan_probe_threshold,
+                "icmp_sweep_unique_destination_hosts_threshold": self.config.ids.icmp_sweep_unique_destination_hosts_threshold,
+                "icmp_sweep_probe_threshold": self.config.ids.icmp_sweep_probe_threshold,
+                "combined_recon_unique_destination_hosts_threshold": self.config.ids.combined_recon_unique_destination_hosts_threshold,
+                "combined_recon_unique_destination_ports_threshold": self.config.ids.combined_recon_unique_destination_ports_threshold,
+                "combined_recon_probe_threshold": self.config.ids.combined_recon_probe_threshold,
                 "failed_connection_window_seconds": self.config.ids.failed_connection_window_seconds,
                 "failed_connection_threshold": self.config.ids.failed_connection_threshold,
                 "connection_attempt_window_seconds": self.config.ids.connection_attempt_window_seconds,
+                "unanswered_syn_window_seconds": self.config.ids.unanswered_syn_window_seconds,
+                "unanswered_syn_threshold": self.config.ids.unanswered_syn_threshold,
+                "unanswered_syn_timeout_seconds": self.config.ids.unanswered_syn_timeout_seconds,
                 "alert_suppression_seconds": self.config.ids.alert_suppression_seconds,
             },
             "ids_runtime": {
@@ -759,10 +797,14 @@ class SecurityController(app_manager.RyuApp):
                 "inference_cooldown_seconds": self.config.ml.inference_cooldown_seconds,
                 "confidence_threshold": self.config.ml.confidence_threshold,
                 "mitigation_threshold": self.config.ml.mitigation_threshold,
+                "alert_only_threshold": self.config.ml.alert_only_threshold,
                 "alert_suppression_seconds": self.config.ml.alert_suppression_seconds,
                 "hybrid_correlation_window_seconds": (
                     self.config.ml.hybrid_correlation_window_seconds
                 ),
+                "ml_only_escalation_count": self.config.ml.ml_only_escalation_count,
+                "ml_only_escalation_enabled": self.config.ml.ml_only_escalation_enabled,
+                "capture_on_ml_only_alert": self.config.ml.capture_on_ml_only_alert,
             },
             "logging": {
                 "level": self.config.logging.level,

@@ -3,12 +3,12 @@
 {% block content %}
 <section class="card-grid card-grid--metrics">
   <article class="metric-card">
-    <span class="metric-card__label">Effective Mode</span>
+    <span class="metric-card__label">Mode</span>
     <strong class="metric-card__value" id="ml-effective-mode">threshold_only</strong>
     <span class="metric-card__meta" id="ml-hybrid-policy">alert_only</span>
   </article>
   <article class="metric-card">
-    <span class="metric-card__label">Model Loaded</span>
+    <span class="metric-card__label">Model</span>
     <strong class="metric-card__value" id="ml-model-status">No</strong>
     <span class="metric-card__meta" id="ml-model-path">-</span>
   </article>
@@ -23,17 +23,17 @@
     <span class="metric-card__meta" id="ml-agreement-count">0 hybrid agreements</span>
   </article>
   <article class="metric-card metric-card--danger">
-    <span class="metric-card__label">Hybrid Disagreements</span>
+    <span class="metric-card__label">Disagreements</span>
     <strong class="metric-card__value" id="ml-disagreement-count">0</strong>
     <span class="metric-card__meta" id="ml-agreement-rate">0.0% agreement rate</span>
   </article>
   <article class="metric-card">
-    <span class="metric-card__label">Threshold-Only</span>
+    <span class="metric-card__label">Threshold Only</span>
     <strong class="metric-card__value" id="ml-threshold-only-count">0</strong>
     <span class="metric-card__meta">Threshold alerts without ML confirmation</span>
   </article>
   <article class="metric-card">
-    <span class="metric-card__label">ML-Only</span>
+    <span class="metric-card__label">ML Only</span>
     <strong class="metric-card__value" id="ml-only-count">0</strong>
     <span class="metric-card__meta">ML alerts without threshold confirmation</span>
   </article>
@@ -43,8 +43,8 @@
   <article class="panel">
     <div class="panel__header">
       <div>
-        <h2>ML Confidence Trend</h2>
-        <p>Recent prediction confidence and suspicion score samples.</p>
+        <h2>Confidence</h2>
+        <p>Recent prediction confidence and suspicion score.</p>
       </div>
     </div>
     <div class="chart-shell">
@@ -54,8 +54,8 @@
   <article class="panel">
     <div class="panel__header">
       <div>
-        <h2>ML Alert Trend</h2>
-        <p>ML detections and hybrid agreements over the live time series.</p>
+        <h2>Alert Trend</h2>
+        <p>ML detections and hybrid agreements over time.</p>
       </div>
     </div>
     <div class="chart-shell">
@@ -68,8 +68,8 @@
   <article class="panel">
     <div class="panel__header">
       <div>
-        <h2>Hybrid Correlation</h2>
-        <p>Agreement, disagreement, and single-detector outcomes within the correlation window.</p>
+        <h2>Correlation</h2>
+        <p>Agreements, disagreements, and single-detector outcomes.</p>
       </div>
     </div>
     <div class="table-shell">
@@ -90,8 +90,8 @@
   <article class="panel">
     <div class="panel__header">
       <div>
-        <h2>Recent ML Alerts</h2>
-        <p>Inference alerts that crossed the configured malicious threshold.</p>
+        <h2>Recent Alerts</h2>
+        <p>Inference alerts that crossed the malicious threshold.</p>
       </div>
     </div>
     <div class="table-shell">
@@ -114,8 +114,8 @@
 <section class="panel">
   <div class="panel__header">
     <div>
-      <h2>Recent Predictions</h2>
-      <p>Latest prediction samples recorded by the ML runtime path.</p>
+      <h2>Predictions</h2>
+      <p>Latest prediction samples from the runtime path.</p>
     </div>
   </div>
   <div class="table-shell">

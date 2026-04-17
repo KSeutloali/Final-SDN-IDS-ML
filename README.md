@@ -241,9 +241,12 @@ start the controller in `hybrid` ML mode by default using the portable runtime m
 
 ```dotenv
 SDN_ML_ENABLED=true
-SDN_ML_MODE=hybrid
+SDN_IDS_MODE=hybrid
 SDN_ML_HYBRID_POLICY=alert_only
-SDN_ML_MODEL_PATH=models/random_forest_ids.runtime.joblib
+SDN_ML_MODEL_PATH=models/random_forest_runtime_final.joblib
+SDN_ML_FEATURE_WINDOW_SECONDS=3
+SDN_ML_CONFIDENCE_THRESHOLD=0.65
+SDN_ML_MITIGATION_THRESHOLD=0.80
 ```
 
 Start the controller, dashboard, and Mininet containers:
@@ -262,7 +265,7 @@ If you want to temporarily return to threshold-only mode for a comparison run, o
 ML environment at launch time:
 
 ```bash
-SDN_ML_ENABLED=false SDN_ML_MODE=threshold_only docker compose up -d --force-recreate controller dashboard
+SDN_ML_ENABLED=false SDN_IDS_MODE=threshold docker compose up -d --force-recreate controller dashboard
 ```
 
 Open the monitoring UI:
@@ -326,12 +329,31 @@ Expected dataset placement:
 - `datasets/cicids2018.parquet` is the preferred default
 - or another CICIDS2018-style parquet path passed with `--dataset`
 
-Train the baseline Random Forest model:
+Train the current runtime-compatible Random Forest model from the merged runtime dataset:
 
 ```bash
 python3 scripts/train_random_forest.py \
-  --dataset datasets/cicids2018.parquet \
-  --model-out models/random_forest_ids.joblib
+  --merged-runtime-data datasets/merged_runtime_dataset.parquet \
+  --label-column Label \
+  --model-out models/random_forest_runtime_final.joblib \
+  --metrics-out models/random_forest_runtime_final_metrics.json \
+  --feature-manifest-out models/random_forest_runtime_final_features.json \
+  --random-state 42 \
+  --test-size 0.2 \
+  --split-mode grouped \
+  --window-seconds 3 \
+  --n-estimators 300 \
+  --max-depth 20 \
+  --min-samples-split 5 \
+  --min-samples-leaf 2 \
+  --class-weight balanced
+```
+
+If you want to merge the approved runtime parquet files before training, run:
+
+```bash
+python3 merge_runtime_datasets.py \
+  --output datasets/merged_runtime_dataset.parquet
 ```
 
 Inspect a parquet file or a whole dataset folder before training:

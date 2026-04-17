@@ -17,7 +17,24 @@ class ConfigLoadingTests(unittest.TestCase):
             self.assertEqual(config.firewall.restricted_tcp_ports, (23,))
             self.assertTrue(config.ids.enabled)
             self.assertTrue(config.ids.inspect_tcp_udp_packets)
-            self.assertEqual(config.ids.unique_destination_ports_threshold, 12)
+            self.assertTrue(config.ids.keep_tcp_syn_packets_visible)
+            self.assertTrue(config.ids.keep_udp_probe_packets_visible)
+            self.assertTrue(config.ids.keep_icmp_echo_requests_visible)
+            self.assertEqual(config.ids.udp_fastpath_ports, ())
+            self.assertEqual(config.ids.packet_rate_threshold, 250)
+            self.assertEqual(config.ids.syn_rate_threshold, 100)
+            self.assertEqual(config.ids.unique_destination_ports_threshold, 6)
+            self.assertEqual(config.ids.unique_destination_hosts_threshold, 4)
+            self.assertEqual(config.ids.tcp_scan_unique_destination_ports_threshold, 4)
+            self.assertEqual(config.ids.udp_scan_unique_destination_ports_threshold, 3)
+            self.assertEqual(config.ids.icmp_sweep_unique_destination_hosts_threshold, 4)
+            self.assertEqual(config.ids.combined_recon_unique_destination_hosts_threshold, 3)
+            self.assertEqual(config.ids.combined_recon_unique_destination_ports_threshold, 3)
+            self.assertEqual(config.ids.combined_recon_probe_threshold, 4)
+            self.assertEqual(config.ids.failed_connection_threshold, 8)
+            self.assertEqual(config.ids.unanswered_syn_window_seconds, 10)
+            self.assertEqual(config.ids.unanswered_syn_threshold, 4)
+            self.assertAlmostEqual(config.ids.unanswered_syn_timeout_seconds, 1.5)
             self.assertTrue(config.mitigation.enabled)
             self.assertTrue(config.mitigation.quarantine_enabled)
             self.assertFalse(config.mitigation.auto_unblock_enabled)
@@ -57,8 +74,12 @@ class ConfigLoadingTests(unittest.TestCase):
             self.assertAlmostEqual(config.ml.inference_cooldown_seconds, 0.5)
             self.assertAlmostEqual(config.ml.confidence_threshold, 0.65)
             self.assertAlmostEqual(config.ml.mitigation_threshold, 0.80)
+            self.assertAlmostEqual(config.ml.alert_only_threshold, 0.55)
             self.assertAlmostEqual(config.ml.unanswered_syn_timeout_seconds, 1.5)
             self.assertEqual(config.ml.hybrid_correlation_window_seconds, 10)
+            self.assertEqual(config.ml.ml_only_escalation_count, 3)
+            self.assertFalse(config.ml.ml_only_escalation_enabled)
+            self.assertTrue(config.ml.capture_on_ml_only_alert)
             self.assertFalse(config.logging.log_allowed_traffic)
             self.assertEqual(config.dashboard.port, 8080)
             self.assertEqual(config.dashboard.base_path, "/sdn-security")
@@ -75,7 +96,23 @@ class ConfigLoadingTests(unittest.TestCase):
                 "SDN_FLOW_PACKET_BLOCK_SECONDS": "15",
                 "SDN_IDS_PACKET_RATE_THRESHOLD": "400",
                 "SDN_IDS_INSPECT_TCP_UDP_PACKETS": "false",
+                "SDN_IDS_KEEP_TCP_SYN_PACKETS_VISIBLE": "false",
+                "SDN_IDS_KEEP_UDP_PROBE_PACKETS_VISIBLE": "false",
+                "SDN_IDS_KEEP_ICMP_ECHO_REQUESTS_VISIBLE": "false",
+                "SDN_IDS_UDP_FASTPATH_PORTS": "53,123",
                 "SDN_IDS_UNIQUE_DESTINATION_HOSTS_THRESHOLD": "10",
+                "SDN_IDS_TCP_SCAN_UNIQUE_DESTINATION_PORTS_THRESHOLD": "5",
+                "SDN_IDS_TCP_SCAN_PROBE_THRESHOLD": "6",
+                "SDN_IDS_UDP_SCAN_UNIQUE_DESTINATION_PORTS_THRESHOLD": "4",
+                "SDN_IDS_UDP_SCAN_PROBE_THRESHOLD": "5",
+                "SDN_IDS_ICMP_SWEEP_UNIQUE_DESTINATION_HOSTS_THRESHOLD": "6",
+                "SDN_IDS_ICMP_SWEEP_PROBE_THRESHOLD": "7",
+                "SDN_IDS_COMBINED_RECON_UNIQUE_DESTINATION_HOSTS_THRESHOLD": "4",
+                "SDN_IDS_COMBINED_RECON_UNIQUE_DESTINATION_PORTS_THRESHOLD": "5",
+                "SDN_IDS_COMBINED_RECON_PROBE_THRESHOLD": "8",
+                "SDN_IDS_UNANSWERED_SYN_WINDOW_SECONDS": "12",
+                "SDN_IDS_UNANSWERED_SYN_THRESHOLD": "6",
+                "SDN_IDS_UNANSWERED_SYN_TIMEOUT_SECONDS": "2.5",
                 "SDN_MITIGATION_ENABLED": "false",
                 "SDN_QUARANTINE_ENABLED": "false",
                 "SDN_MANUAL_UNBLOCK_ENABLED": "false",
@@ -101,7 +138,11 @@ class ConfigLoadingTests(unittest.TestCase):
                 "SDN_ML_DATASET_DISABLE_MITIGATION": "true",
                 "SDN_ML_UNANSWERED_SYN_TIMEOUT_SECONDS": "0.9",
                 "SDN_ML_CONFIDENCE_THRESHOLD": "0.66",
+                "SDN_ML_ALERT_ONLY_THRESHOLD": "0.58",
                 "SDN_ML_HYBRID_CORRELATION_WINDOW_SECONDS": "15",
+                "SDN_ML_ONLY_ESCALATION_COUNT": "4",
+                "SDN_ML_ONLY_ESCALATION_ENABLED": "true",
+                "SDN_ML_CAPTURE_ON_ML_ONLY_ALERT": "false",
                 "SDN_ML_POSITIVE_LABELS": "malicious,attack,scan",
                 "SDN_LOG_ALLOWED_TRAFFIC": "true",
                 "SDN_DASHBOARD_PORT": "18080",
@@ -121,7 +162,23 @@ class ConfigLoadingTests(unittest.TestCase):
             self.assertEqual(config.flow_timeouts.packet_block_seconds, 15)
             self.assertEqual(config.ids.packet_rate_threshold, 400)
             self.assertFalse(config.ids.inspect_tcp_udp_packets)
+            self.assertFalse(config.ids.keep_tcp_syn_packets_visible)
+            self.assertFalse(config.ids.keep_udp_probe_packets_visible)
+            self.assertFalse(config.ids.keep_icmp_echo_requests_visible)
+            self.assertEqual(config.ids.udp_fastpath_ports, (53, 123))
             self.assertEqual(config.ids.unique_destination_hosts_threshold, 10)
+            self.assertEqual(config.ids.tcp_scan_unique_destination_ports_threshold, 5)
+            self.assertEqual(config.ids.tcp_scan_probe_threshold, 6)
+            self.assertEqual(config.ids.udp_scan_unique_destination_ports_threshold, 4)
+            self.assertEqual(config.ids.udp_scan_probe_threshold, 5)
+            self.assertEqual(config.ids.icmp_sweep_unique_destination_hosts_threshold, 6)
+            self.assertEqual(config.ids.icmp_sweep_probe_threshold, 7)
+            self.assertEqual(config.ids.combined_recon_unique_destination_hosts_threshold, 4)
+            self.assertEqual(config.ids.combined_recon_unique_destination_ports_threshold, 5)
+            self.assertEqual(config.ids.combined_recon_probe_threshold, 8)
+            self.assertEqual(config.ids.unanswered_syn_window_seconds, 12)
+            self.assertEqual(config.ids.unanswered_syn_threshold, 6)
+            self.assertAlmostEqual(config.ids.unanswered_syn_timeout_seconds, 2.5)
             self.assertFalse(config.mitigation.enabled)
             self.assertFalse(config.mitigation.quarantine_enabled)
             self.assertFalse(config.mitigation.manual_unblock_enabled)
@@ -147,7 +204,11 @@ class ConfigLoadingTests(unittest.TestCase):
             self.assertTrue(config.ml.dataset_disable_mitigation)
             self.assertAlmostEqual(config.ml.unanswered_syn_timeout_seconds, 0.9)
             self.assertAlmostEqual(config.ml.confidence_threshold, 0.66)
+            self.assertAlmostEqual(config.ml.alert_only_threshold, 0.58)
             self.assertEqual(config.ml.hybrid_correlation_window_seconds, 15)
+            self.assertEqual(config.ml.ml_only_escalation_count, 4)
+            self.assertTrue(config.ml.ml_only_escalation_enabled)
+            self.assertFalse(config.ml.capture_on_ml_only_alert)
             self.assertEqual(
                 config.ml.positive_labels,
                 ("malicious", "attack", "scan"),

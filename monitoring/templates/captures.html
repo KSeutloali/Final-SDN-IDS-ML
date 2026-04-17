@@ -3,82 +3,124 @@
 {% block content %}
 <section class="card-grid card-grid--metrics">
   <article class="metric-card">
-    <span class="metric-card__label">Rolling Capture</span>
+    <span class="metric-card__label">Rolling</span>
     <strong class="metric-card__value" id="captures-status">inactive</strong>
-    <span class="metric-card__meta" id="captures-active-session">Waiting for topology capture</span>
+    <span class="metric-card__meta" id="captures-active-session">Waiting for capture</span>
   </article>
   <article class="metric-card">
-    <span class="metric-card__label">Rolling Files</span>
+    <span class="metric-card__label">Ring Files</span>
     <strong class="metric-card__value" id="captures-session-count">0</strong>
-    <span class="metric-card__meta">Ring-buffer files currently discoverable</span>
+    <span class="metric-card__meta">Current rolling files</span>
   </article>
   <article class="metric-card">
-    <span class="metric-card__label">Preserved Snapshots</span>
+    <span class="metric-card__label">Snapshots</span>
     <strong class="metric-card__value" id="captures-file-count">0</strong>
-    <span class="metric-card__meta">Alert-linked forensic evidence</span>
+    <span class="metric-card__meta">Alert-linked evidence</span>
   </article>
   <article class="metric-card">
-    <span class="metric-card__label">Last Scan</span>
+    <span class="metric-card__label">Scanned</span>
     <strong class="metric-card__value" id="captures-last-scan">Waiting</strong>
-    <span class="metric-card__meta">Dashboard filesystem refresh time</span>
+    <span class="metric-card__meta">Last filesystem refresh</span>
   </article>
   <article class="metric-card">
-    <span class="metric-card__label">Stored Size</span>
+    <span class="metric-card__label">Size</span>
     <strong class="metric-card__value" id="captures-total-size">0 B</strong>
-    <span class="metric-card__meta">Across all discovered pcap files</span>
+    <span class="metric-card__meta">Across all PCAP files</span>
   </article>
 </section>
 
 <section class="panel">
   <div class="panel__header">
     <div>
-      <h2>Preserved Alert Snapshots</h2>
-      <p>Snapshots copied automatically when threshold or ML detections occur.</p>
+      <h2>Alert Snapshots</h2>
+      <p>Snapshots preserved automatically when detections occur.</p>
     </div>
   </div>
-  <div class="table-shell">
-    <table class="data-table">
-      <thead>
-        <tr>
-          <th>Snapshot</th>
-          <th>Timestamp</th>
-          <th>Source IP</th>
-          <th>Detector</th>
-          <th>Alert Type</th>
-          <th>Files</th>
-          <th>Size</th>
-          <th>Status</th>
-          <th>Download</th>
-        </tr>
-      </thead>
-      <tbody id="captures-session-table"></tbody>
-    </table>
+  <div class="table-scroll-layout js-scroll-layout">
+    <div class="table-shell table-shell--snapshots table-shell--scroll js-scroll-shell" id="captures-snapshots-shell">
+      <table class="data-table data-table--snapshots">
+        <thead>
+          <tr>
+            <th>Snapshot</th>
+            <th>Timestamp</th>
+            <th>Source IP</th>
+            <th>Detector</th>
+            <th>Alert Type</th>
+            <th>Files</th>
+            <th>Size</th>
+            <th>Status</th>
+            <th>Download</th>
+          </tr>
+        </thead>
+        <tbody id="captures-session-table"></tbody>
+      </table>
+    </div>
+    <div class="scroll-rail js-scroll-rail" aria-hidden="true">
+      <button
+        class="scroll-rail__thumb js-scroll-thumb"
+        type="button"
+        tabindex="-1"
+        aria-hidden="true"
+      ></button>
+    </div>
+  </div>
+  <div class="table-actions">
+    <button
+      class="table-button table-button--secondary js-capture-more"
+      id="captures-snapshots-more"
+      type="button"
+      data-capture-section="snapshots"
+      hidden
+    >
+      Show 5 more
+    </button>
   </div>
 </section>
 
 <section class="panel">
-    <div class="panel__header">
-      <div>
-      <h2>Rolling Capture Files</h2>
-      <p>Current background ring-buffer evidence used to preserve alert snapshots.</p>
-      </div>
+  <div class="panel__header">
+    <div>
+      <h2>Ring Buffer</h2>
+      <p>Background rolling captures used to preserve alert snapshots.</p>
     </div>
-  <div class="table-shell">
-    <table class="data-table">
-      <thead>
-        <tr>
-          <th>Capture Type</th>
-          <th>Scenario</th>
-          <th>Interface</th>
-          <th>File</th>
-          <th>Status</th>
-          <th>Size</th>
-          <th>Modified</th>
-          <th>Download</th>
-        </tr>
-      </thead>
-      <tbody id="captures-file-table"></tbody>
-    </table>
+  </div>
+  <div class="table-scroll-layout js-scroll-layout">
+    <div class="table-shell table-shell--scroll js-scroll-shell" id="captures-files-shell">
+      <table class="data-table data-table--captures-files">
+        <thead>
+          <tr>
+            <th>Capture Type</th>
+            <th>Scenario</th>
+            <th>Interface</th>
+            <th>File</th>
+            <th>Status</th>
+            <th>Size</th>
+            <th>Modified</th>
+            <th>Download</th>
+          </tr>
+        </thead>
+        <tbody id="captures-file-table"></tbody>
+      </table>
+    </div>
+    <div class="scroll-rail js-scroll-rail" aria-hidden="true">
+      <button
+        class="scroll-rail__thumb js-scroll-thumb"
+        type="button"
+        tabindex="-1"
+        aria-hidden="true"
+      ></button>
+    </div>
+  </div>
+  <div class="table-actions">
+    <button
+      class="table-button table-button--secondary js-capture-more"
+      id="captures-files-more"
+      type="button"
+      data-capture-section="files"
+      hidden
+    >
+      Show 5 more
+    </button>
   </div>
 </section>
 {% endblock %}

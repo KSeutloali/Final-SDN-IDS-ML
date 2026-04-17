@@ -3,39 +3,39 @@
 {% block content %}
 <section class="card-grid card-grid--metrics">
   <article class="metric-card">
-    <span class="metric-card__label">Packets Processed</span>
+    <span class="metric-card__label">Packets</span>
     <strong class="metric-card__value" id="stat-total-packets">0</strong>
     <span class="metric-card__meta" id="stat-packet-rate">0 pkt/s</span>
   </article>
   <article class="metric-card">
-    <span class="metric-card__label">Active Switches</span>
+    <span class="metric-card__label">Switches</span>
     <strong class="metric-card__value" id="stat-active-switches">0</strong>
     <span class="metric-card__meta">OpenFlow 1.3 datapaths</span>
   </article>
   <article class="metric-card">
-    <span class="metric-card__label">Learned Hosts</span>
+    <span class="metric-card__label">Hosts</span>
     <strong class="metric-card__value" id="stat-active-hosts">0</strong>
     <span class="metric-card__meta">Visible to controller</span>
   </article>
   <article class="metric-card metric-card--danger">
-    <span class="metric-card__label">Quarantined Hosts</span>
+    <span class="metric-card__label">Blocks</span>
     <strong class="metric-card__value" id="stat-active-blocks">0</strong>
     <span class="metric-card__meta" id="stat-alert-total">0 alerts total</span>
   </article>
 </section>
 
 <section class="mode-banner">
-  <span class="mode-banner__label">Active IDS Mode</span>
+  <span class="mode-banner__label">IDS mode</span>
   <strong class="mode-banner__value" id="overview-ids-mode">Threshold IDS</strong>
-  <span class="mode-banner__meta" id="overview-ids-mode-detail">Threshold-based inspection only.</span>
+  <span class="mode-banner__meta" id="overview-ids-mode-detail">Threshold only.</span>
 </section>
 
 <section class="panel-grid panel-grid--wide">
   <article class="panel">
     <div class="panel__header">
       <div>
-        <h2>Packets Over Time</h2>
-        <p>Continuous view of controller-observed traffic volume.</p>
+        <h2>Packet trend</h2>
+        <p>Live controller traffic over time.</p>
       </div>
     </div>
     <div class="chart-shell">
@@ -45,8 +45,8 @@
   <article class="panel">
     <div class="panel__header">
       <div>
-        <h2>Alerts and Blocks</h2>
-        <p>Threshold and ML activity with mitigation trend lines.</p>
+        <h2>Detections</h2>
+        <p>Alerts and active blocks over time.</p>
       </div>
     </div>
     <div class="chart-shell">
@@ -59,8 +59,8 @@
   <article class="panel">
     <div class="panel__header">
       <div>
-        <h2>Protocol Mix</h2>
-        <p>Current protocol distribution from live packet counters.</p>
+        <h2>Protocols</h2>
+        <p>Current protocol mix from live counters.</p>
       </div>
     </div>
     <div class="chart-shell chart-shell--compact">
@@ -70,8 +70,8 @@
   <article class="panel">
     <div class="panel__header">
       <div>
-        <h2>Recent Security Events</h2>
-        <p>Newest alerts and hybrid outcomes without refreshing the page.</p>
+        <h2>Recent alerts</h2>
+        <p>Latest detections and correlation outcomes.</p>
       </div>
     </div>
     <div class="table-shell">
@@ -95,8 +95,8 @@
   <article class="panel">
     <div class="panel__header">
       <div>
-        <h2>Quarantined Hosts</h2>
-        <p>Current analyst-held quarantines installed by threshold or ML logic.</p>
+        <h2>Active blocks</h2>
+        <p>Current quarantines from threshold or ML.</p>
       </div>
     </div>
     <div class="table-shell">
@@ -117,7 +117,7 @@
     <div class="panel__header">
       <div>
         <h2>Network Inventory</h2>
-        <p>Currently connected switches and recently learned hosts.</p>
+        <p>Connected switches and learned hosts.</p>
       </div>
     </div>
     <div class="stacked-list" id="overview-inventory"></div>

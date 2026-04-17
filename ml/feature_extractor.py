@@ -60,6 +60,7 @@ class LiveFeatureExtractor(object):
         self.host_windows = defaultdict(deque)
         self.failed_windows = defaultdict(deque)
         self.unanswered_windows = defaultdict(deque)
+        self.host_feature_baselines = defaultdict(dict)
         self.connection_attempts = {}
         self.connection_attempt_queue = deque()
         self.pending_attempt_counts = defaultdict(int)
@@ -131,7 +132,7 @@ class LiveFeatureExtractor(object):
             unanswered_window.popleft()
 
         if not window:
-            return dict((name, 0.0) for name in RUNTIME_FEATURE_NAMES)
+            return self._zero_feature_values()
 
         first_seen = window[0][0]
         observation_window_seconds = max(1.0, min(self.window_seconds, now - first_seen + 0.001))
@@ -163,26 +164,56 @@ class LiveFeatureExtractor(object):
             if syn_count
             else 0.0
         )
+        packet_rate = packet_count / observation_window_seconds
+        bytes_per_second = byte_count / observation_window_seconds
+        connection_rate = connection_attempts / observation_window_seconds
+        failed_connection_rate = failed_count / observation_window_seconds
+        unanswered_syn_rate = unanswered_count / observation_window_seconds
+        recon_probe_density = (
+            (float(max(len(window), int(connection_attempts))) + unanswered_count)
+            / observation_window_seconds
+        )
+        baseline = self.host_feature_baselines[src_ip]
+        packet_rate_delta = packet_rate - float(baseline.get("packet_rate", packet_rate))
+        destination_port_fanout_delta = destination_port_fanout_ratio - float(
+            baseline.get("destination_port_fanout_ratio", destination_port_fanout_ratio)
+        )
+        unique_destination_ips_delta = unique_destination_ips - float(
+            baseline.get("unique_destination_ips", unique_destination_ips)
+        )
+        unique_destination_ports_delta = unique_destination_ports - float(
+            baseline.get("unique_destination_ports", unique_destination_ports)
+        )
 
-        return {
+        feature_values = {
             "packet_count": packet_count,
             "byte_count": byte_count,
             "unique_destination_ports": unique_destination_ports,
             "unique_destination_ips": unique_destination_ips,
             "destination_port_fanout_ratio": destination_port_fanout_ratio,
-            "connection_rate": connection_attempts / observation_window_seconds,
+            "connection_rate": connection_rate,
             "syn_rate": syn_count / observation_window_seconds,
             "icmp_rate": icmp_count / observation_window_seconds,
             "udp_rate": udp_count / observation_window_seconds,
             "tcp_rate": tcp_count / observation_window_seconds,
             "average_packet_size": (byte_count / packet_count) if packet_count else 0.0,
             "observation_window_seconds": float(observation_window_seconds),
-            "packet_rate": packet_count / observation_window_seconds,
-            "bytes_per_second": byte_count / observation_window_seconds,
-            "failed_connection_rate": failed_count / observation_window_seconds,
-            "unanswered_syn_rate": unanswered_count / observation_window_seconds,
+            "packet_rate": packet_rate,
+            "bytes_per_second": bytes_per_second,
+            "failed_connection_rate": failed_connection_rate,
+            "unanswered_syn_rate": unanswered_syn_rate,
             "unanswered_syn_ratio": unanswered_syn_ratio,
+            # Extra runtime-visible recon features are recorded for live enrichment
+            # and future retraining without changing the current model vector.
+            "unanswered_syn_count": unanswered_count,
+            "recon_probe_density": recon_probe_density,
+            "packet_rate_delta": packet_rate_delta,
+            "destination_port_fanout_delta": destination_port_fanout_delta,
+            "unique_destination_ips_delta": unique_destination_ips_delta,
+            "unique_destination_ports_delta": unique_destination_ports_delta,
         }
+        self._update_baseline(src_ip, feature_values)
+        return feature_values
 
     def _record_failed_connection(self, packet_metadata, now):
         if (
@@ -263,6 +294,7 @@ class LiveFeatureExtractor(object):
         self.host_windows.clear()
         self.failed_windows.clear()
         self.unanswered_windows.clear()
+        self.host_feature_baselines.clear()
         self.connection_attempts.clear()
         self.connection_attempt_queue.clear()
         self.pending_attempt_counts.clear()
@@ -283,6 +315,36 @@ class LiveFeatureExtractor(object):
         if packet_metadata.transport_protocol == "udp":
             return packet_metadata.dst_port is not None
         return False
+
+    def _zero_feature_values(self):
+        feature_values = dict((name, 0.0) for name in RUNTIME_FEATURE_NAMES)
+        feature_values.update(
+            {
+                "unanswered_syn_count": 0.0,
+                "recon_probe_density": 0.0,
+                "packet_rate_delta": 0.0,
+                "destination_port_fanout_delta": 0.0,
+                "unique_destination_ips_delta": 0.0,
+                "unique_destination_ports_delta": 0.0,
+            }
+        )
+        return feature_values
+
+    def _update_baseline(self, src_ip, feature_values):
+        baseline = self.host_feature_baselines[src_ip]
+        alpha = 0.25
+        for name in (
+            "packet_rate",
+            "destination_port_fanout_ratio",
+            "unique_destination_ips",
+            "unique_destination_ports",
+        ):
+            current_value = float(feature_values.get(name, 0.0))
+            previous_value = baseline.get(name)
+            if previous_value is None:
+                baseline[name] = current_value
+                continue
+            baseline[name] = ((1.0 - alpha) * float(previous_value)) + (alpha * current_value)
 
 
 def extract_features(extractor, packet_metadata):

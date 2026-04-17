@@ -69,6 +69,29 @@ class LiveFeatureExtractorTests(unittest.TestCase):
         self.assertGreaterEqual(snapshot.feature_values["unanswered_syn_rate"], 1.0)
         self.assertGreater(len(extractor.unanswered_windows["10.0.0.3"]), 0)
 
+    def test_extended_recon_features_include_counts_and_trend_deltas(self):
+        extractor = LiveFeatureExtractor(self._config())
+
+        extractor.observe(self._packet(timestamp=1.0, dst_port=80, src_port=43001))
+        extractor.observe(self._packet(timestamp=1.2, dst_port=81, src_port=43002))
+        snapshot = extractor.observe(
+            self._packet(
+                timestamp=1.4,
+                dst_ip="10.0.0.4",
+                dst_port=82,
+                src_port=43003,
+            )
+        )
+
+        self.assertIn("unanswered_syn_count", snapshot.feature_values)
+        self.assertIn("recon_probe_density", snapshot.feature_values)
+        self.assertIn("packet_rate_delta", snapshot.feature_values)
+        self.assertIn("unique_destination_ports_delta", snapshot.feature_values)
+        self.assertGreater(snapshot.feature_values["unanswered_syn_count"], 0.0)
+        self.assertGreater(snapshot.feature_values["recon_probe_density"], 0.0)
+        self.assertNotEqual(snapshot.feature_values["packet_rate_delta"], 0.0)
+        self.assertNotEqual(snapshot.feature_values["unique_destination_ports_delta"], 0.0)
+
 
 if __name__ == "__main__":
     unittest.main()

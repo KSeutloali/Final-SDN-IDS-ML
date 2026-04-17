@@ -39,6 +39,32 @@ class MetricsStoreTests(unittest.TestCase):
         self.assertEqual(snapshot["hybrid_agreements_total"], 1)
         self.assertEqual(snapshot["hybrid_correlated_total"], 1)
 
+    def test_layered_hybrid_statuses_are_counted(self):
+        metrics = MetricsStore()
+
+        metrics.record_hybrid_correlation(
+            HybridCorrelationEvent(
+                src_ip="10.0.0.3",
+                status="threshold_enriched_by_ml",
+                reason="subthreshold_recon_pattern_enriched_by_ml",
+                timestamp=1.0,
+                correlation_window_seconds=10,
+            )
+        )
+        metrics.record_hybrid_correlation(
+            HybridCorrelationEvent(
+                src_ip="10.0.0.4",
+                status="anomaly_only",
+                reason="ml_suspicion_above_alert_only_threshold",
+                timestamp=2.0,
+                correlation_window_seconds=10,
+            )
+        )
+
+        snapshot = metrics.snapshot()
+        self.assertEqual(snapshot["hybrid_agreements_total"], 1)
+        self.assertEqual(snapshot["ml_only_detections_total"], 1)
+
     def test_reset_runtime_session_clears_live_counters(self):
         metrics = MetricsStore()
 

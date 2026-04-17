@@ -1,5 +1,6 @@
 """Orchestration for optional ML inference alongside the threshold IDS."""
 
+from collections import defaultdict, deque
 from dataclasses import dataclass, field
 
 from core.ids_mode import (
@@ -14,7 +15,12 @@ from ml.model_loader import load_model
 
 
 VALID_ML_MODES = ("threshold_only", "ml_only", "hybrid")
-VALID_HYBRID_POLICIES = ("alert_only", "high_confidence_block", "consensus_severity")
+VALID_HYBRID_POLICIES = (
+    "alert_only",
+    "high_confidence_block",
+    "consensus_severity",
+    "layered_consensus",
+)
 
 
 @dataclass
@@ -100,6 +106,7 @@ class MLIDSPipeline(object):
         self.pending_threshold_alerts = {}
         self.pending_ml_alerts = {}
         self.recent_prediction_state = {}
+        self.ml_only_signal_history = defaultdict(deque)
 
     def effective_mode(self):
         if self.mode == "threshold_only":
@@ -160,10 +167,11 @@ class MLIDSPipeline(object):
             "effective_mode_label": ids_mode_label(effective_mode),
         }
 
-    def inspect(self, packet_metadata, threshold_alerts=None):
+    def inspect(self, packet_metadata, threshold_alerts=None, threshold_context=None):
         """Run the ML feature/inference path when the effective mode allows it."""
 
         threshold_alerts = threshold_alerts or []
+        threshold_context = dict(threshold_context or {})
         now = getattr(packet_metadata, "timestamp", 0.0)
         if self.effective_mode() == "threshold_only":
             return MLInspectionResult()
@@ -171,13 +179,10 @@ class MLIDSPipeline(object):
         for alert in threshold_alerts:
             if alert is None or not alert.src_ip:
                 continue
-            self.pending_threshold_alerts[alert.src_ip] = {
-                "timestamp": alert.timestamp,
-                "alert_type": alert.alert_type,
-                "seen_benign_prediction": False,
-                "confidence": None,
-                "suspicion_score": None,
-            }
+            self.pending_threshold_alerts[alert.src_ip] = self._build_pending_threshold_state(
+                alert,
+                threshold_context=threshold_context,
+            )
 
         feature_snapshot = self.feature_extractor.observe(packet_metadata)
         if feature_snapshot is None:
@@ -192,8 +197,8 @@ class MLIDSPipeline(object):
 
         prediction = self.inference_engine.predict(feature_snapshot)
         if prediction is not None:
-            self._record_prediction_state(prediction)
-        if prediction is None or not prediction.is_malicious:
+            self._record_prediction_state(prediction, threshold_context=threshold_context)
+        if prediction is None or not self._should_emit_alert(prediction, threshold_context):
             return MLInspectionResult(
                 feature_snapshot=feature_snapshot,
                 prediction=prediction,
@@ -205,7 +210,7 @@ class MLIDSPipeline(object):
                 prediction=prediction,
             )
 
-        alert = self._build_alert(prediction)
+        alert = self._build_alert(prediction, threshold_context=threshold_context)
         self.last_alert_at[prediction.src_ip] = prediction.timestamp
         return MLInspectionResult(
             feature_snapshot=feature_snapshot,
@@ -213,8 +218,11 @@ class MLIDSPipeline(object):
             alert=alert,
         )
 
-    def _build_alert(self, prediction):
-        agreement = self._has_pending_threshold_agreement(
+    def _build_alert(self, prediction, threshold_context=None):
+        threshold_context = dict(threshold_context or {})
+        threshold_triggered = bool(threshold_context.get("threshold_triggered"))
+        threshold_suspicious = bool(threshold_context.get("recon_suspicious"))
+        agreement = threshold_triggered or self._has_pending_threshold_agreement(
             prediction.src_ip,
             prediction.timestamp,
         )
@@ -222,42 +230,116 @@ class MLIDSPipeline(object):
         should_mitigate = False
         severity = "medium"
         decision = "log_only"
-
-        if agreement:
-            severity = "critical"
-            decision = "confirmed_by_threshold"
+        reason = prediction.reason
+        correlation_status = "ml_only"
+        known_class_match = False
+        repeat_count = 0
+        low_confidence_suspicious = (
+            not prediction.is_malicious
+            and float(prediction.suspicion_score) >= float(self.ml_config.alert_only_threshold)
+        )
 
         if effective_mode == "ml_only":
-            if prediction.suspicion_score >= self.ml_config.mitigation_threshold:
+            correlation_status = "anomaly_only" if low_confidence_suspicious else "ml_only"
+            decision = "anomaly_only_alert" if low_confidence_suspicious else "ml_only_alert"
+            reason = (
+                "ml_suspicion_above_alert_only_threshold"
+                if low_confidence_suspicious
+                else prediction.reason
+            )
+            repeat_count = self._record_ml_signal(prediction.src_ip, prediction.timestamp)
+            if prediction.is_malicious and prediction.suspicion_score >= self.ml_config.mitigation_threshold:
                 should_mitigate = True
                 severity = "high"
                 decision = "ml_only_block"
-            else:
-                severity = "medium"
-                decision = "ml_only_alert"
+                correlation_status = "ml_only"
         elif effective_mode == "hybrid":
-            if self.hybrid_policy == "high_confidence_block":
-                if prediction.suspicion_score >= self.ml_config.mitigation_threshold:
-                    should_mitigate = True
-                    severity = "high" if not agreement else "critical"
-                    decision = "hybrid_ml_block"
-                elif agreement:
-                    severity = "critical"
-                    decision = "confirmed_by_threshold"
-            elif self.hybrid_policy == "consensus_severity" and agreement:
+            if agreement:
                 severity = "critical"
-                decision = "confirmed_by_threshold"
+                decision = "threshold_enriched_by_ml"
+                reason = "threshold_triggered_with_ml_context"
+                known_class_match = prediction.is_malicious and bool(
+                    threshold_context.get("threshold_rule_family")
+                )
+                correlation_status = (
+                    "known_class_match" if known_class_match else "threshold_plus_ml"
+                )
+            elif threshold_suspicious:
+                severity = "high"
+                decision = "threshold_enriched_by_ml"
+                reason = "subthreshold_recon_pattern_enriched_by_ml"
+                correlation_status = "threshold_enriched_by_ml"
+                repeat_count = self._record_ml_signal(prediction.src_ip, prediction.timestamp)
+                if (
+                    self.hybrid_policy == "high_confidence_block"
+                    and prediction.is_malicious
+                    and prediction.suspicion_score >= self.ml_config.mitigation_threshold
+                    and (
+                        (not self.ml_config.ml_only_escalation_enabled)
+                        or repeat_count >= self.ml_config.ml_only_escalation_count
+                        or int(threshold_context.get("recon_suspicion_score", 0)) >= 2
+                    )
+                ):
+                    should_mitigate = True
+                    decision = "hybrid_ml_block"
+            else:
+                correlation_status = "anomaly_only" if low_confidence_suspicious else "ml_only"
+                decision = "anomaly_only_alert" if low_confidence_suspicious else "ml_only_alert"
+                reason = (
+                    "ml_suspicion_above_alert_only_threshold"
+                    if low_confidence_suspicious
+                    else prediction.reason
+                )
+                repeat_count = self._record_ml_signal(prediction.src_ip, prediction.timestamp)
+                if (
+                    self.hybrid_policy == "high_confidence_block"
+                    and prediction.is_malicious
+                    and prediction.suspicion_score >= self.ml_config.mitigation_threshold
+                    and (
+                        (not self.ml_config.ml_only_escalation_enabled)
+                        or repeat_count >= self.ml_config.ml_only_escalation_count
+                    )
+                ):
+                    should_mitigate = True
+                    severity = "high"
+                    decision = "hybrid_ml_block"
 
-        if agreement:
-            reason = "threshold_and_ml_agree"
-        elif should_mitigate:
+        if should_mitigate and reason == prediction.reason:
             reason = "ml_confidence_above_mitigation_threshold"
-        else:
-            reason = prediction.reason
 
         details = {
             "agreement_with_threshold": agreement,
-            "hybrid_status": "agreement" if agreement else "ml_only_pending",
+            "hybrid_status": correlation_status,
+            "correlation_status": correlation_status,
+            "threshold_triggered": threshold_triggered,
+            "threshold_reason": threshold_context.get("threshold_reason", ""),
+            "threshold_rule_family": threshold_context.get("threshold_rule_family", ""),
+            "threshold_severity": threshold_context.get("threshold_severity", ""),
+            "threshold_recent_event_count": int(
+                threshold_context.get("threshold_recent_event_count", 0) or 0
+            ),
+            "threshold_context_suspicious": threshold_suspicious,
+            "threshold_unanswered_syn_count": int(
+                threshold_context.get("unanswered_syn_count", 0) or 0
+            ),
+            "threshold_unique_destination_hosts": int(
+                threshold_context.get("scan_unique_destination_hosts", 0) or 0
+            ),
+            "threshold_unique_destination_ports": int(
+                threshold_context.get("scan_unique_destination_ports", 0) or 0
+            ),
+            "recon_visible_traffic": bool(
+                threshold_context.get("recon_visible_traffic", False)
+            ),
+            "forwarding_visibility": threshold_context.get("forwarding_visibility", ""),
+            "known_class_match": known_class_match,
+            "ml_only_repeat_count": repeat_count,
+            "capture_recommended": correlation_status in ("ml_only", "anomaly_only"),
+            "watchlist_candidate": correlation_status in (
+                "threshold_enriched_by_ml",
+                "ml_only",
+                "anomaly_only",
+            ),
             "confidence": round(float(prediction.confidence), 6),
             "suspicion_score": round(float(prediction.suspicion_score), 6),
             "label": prediction.label,
@@ -288,6 +370,22 @@ class MLIDSPipeline(object):
             ),
             "unanswered_syn_ratio": round(
                 float(prediction.feature_values.get("unanswered_syn_ratio", 0.0)),
+                6,
+            ),
+            "unanswered_syn_count": round(
+                float(prediction.feature_values.get("unanswered_syn_count", 0.0)),
+                3,
+            ),
+            "recon_probe_density": round(
+                float(prediction.feature_values.get("recon_probe_density", 0.0)),
+                6,
+            ),
+            "packet_rate_delta": round(
+                float(prediction.feature_values.get("packet_rate_delta", 0.0)),
+                6,
+            ),
+            "destination_port_fanout_delta": round(
+                float(prediction.feature_values.get("destination_port_fanout_delta", 0.0)),
                 6,
             ),
             "observation_window_seconds": round(
@@ -330,6 +428,21 @@ class MLIDSPipeline(object):
         self.last_inference_observation[feature_snapshot.src_ip] = current_observation
         return True
 
+    def _should_emit_alert(self, prediction, threshold_context=None):
+        if prediction is None:
+            return False
+        if prediction.is_malicious:
+            return True
+        threshold_context = dict(threshold_context or {})
+        return (
+            float(prediction.suspicion_score) >= float(self.ml_config.alert_only_threshold)
+            and (
+                self.effective_mode() == "ml_only"
+                or bool(threshold_context.get("recon_suspicious"))
+                or bool(threshold_context.get("recon_visible_traffic"))
+            )
+        )
+
     def _is_alert_suppressed(self, src_ip, now):
         previous = self.last_alert_at.get(src_ip)
         if previous is None:
@@ -367,11 +480,14 @@ class MLIDSPipeline(object):
             and self._within_correlation_window(pending_ml["timestamp"], now)
         ):
             del self.pending_ml_alerts[alert.src_ip]
+            status = pending_ml.get("status", "threshold_plus_ml")
+            if status in ("ml_only", "anomaly_only"):
+                status = "threshold_plus_ml"
             events.append(
                 HybridCorrelationEvent(
                     src_ip=alert.src_ip,
-                    status="agreement",
-                    reason="threshold_and_ml_agree_within_window",
+                    status=status,
+                    reason=pending_ml.get("reason", "threshold_and_ml_agree_within_window"),
                     timestamp=now,
                     correlation_window_seconds=self.ml_config.hybrid_correlation_window_seconds,
                     threshold_timestamp=alert.timestamp,
@@ -391,17 +507,16 @@ class MLIDSPipeline(object):
                 now,
             )
         )
-        self.pending_threshold_alerts[alert.src_ip] = {
-            "timestamp": alert.timestamp,
-            "alert_type": alert.alert_type,
-            "seen_benign_prediction": seen_benign_prediction,
-            "confidence": prediction_state.get("confidence") if seen_benign_prediction else None,
-            "suspicion_score": (
-                prediction_state.get("suspicion_score")
-                if seen_benign_prediction
-                else None
-            ),
-        }
+        self.pending_threshold_alerts[alert.src_ip] = self._build_pending_threshold_state(alert)
+        self.pending_threshold_alerts[alert.src_ip]["seen_benign_prediction"] = seen_benign_prediction
+        self.pending_threshold_alerts[alert.src_ip]["confidence"] = (
+            prediction_state.get("confidence") if seen_benign_prediction else None
+        )
+        self.pending_threshold_alerts[alert.src_ip]["suspicion_score"] = (
+            prediction_state.get("suspicion_score")
+            if seen_benign_prediction
+            else None
+        )
         return events
 
     def handle_ml_alert(self, alert):
@@ -409,6 +524,8 @@ class MLIDSPipeline(object):
             return []
 
         now = alert.timestamp
+        details = dict(getattr(alert, "details", {}) or {})
+        alert_reason = getattr(alert, "reason", "ml_alert_without_threshold_confirmation")
         events = self.expire_correlations(now)
         pending_threshold = self.pending_threshold_alerts.get(alert.src_ip)
         if (
@@ -419,8 +536,8 @@ class MLIDSPipeline(object):
             events.append(
                 HybridCorrelationEvent(
                     src_ip=alert.src_ip,
-                    status="agreement",
-                    reason="threshold_and_ml_agree_within_window",
+                    status=details.get("correlation_status", "threshold_plus_ml"),
+                    reason=alert_reason,
                     timestamp=now,
                     correlation_window_seconds=self.ml_config.hybrid_correlation_window_seconds,
                     threshold_timestamp=pending_threshold["timestamp"],
@@ -436,6 +553,8 @@ class MLIDSPipeline(object):
             "alert_type": alert.alert_type,
             "confidence": float(alert.confidence),
             "suspicion_score": float(alert.suspicion_score),
+            "status": details.get("correlation_status", "ml_only"),
+            "reason": alert_reason,
         }
         return events
 
@@ -472,8 +591,8 @@ class MLIDSPipeline(object):
             events.append(
                 HybridCorrelationEvent(
                     src_ip=src_ip,
-                    status="ml_only",
-                    reason="ml_alert_without_threshold_confirmation",
+                    status=pending_ml.get("status", "ml_only"),
+                    reason=pending_ml.get("reason", "ml_alert_without_threshold_confirmation"),
                     timestamp=now,
                     correlation_window_seconds=expiry_window,
                     ml_timestamp=pending_ml["timestamp"],
@@ -492,12 +611,14 @@ class MLIDSPipeline(object):
             return False
         return self._within_correlation_window(pending_threshold["timestamp"], now)
 
-    def _record_prediction_state(self, prediction):
+    def _record_prediction_state(self, prediction, threshold_context=None):
+        threshold_context = dict(threshold_context or {})
         self.recent_prediction_state[prediction.src_ip] = {
             "timestamp": prediction.timestamp,
             "is_malicious": bool(prediction.is_malicious),
             "confidence": float(prediction.confidence),
             "suspicion_score": float(prediction.suspicion_score),
+            "threshold_context_suspicious": bool(threshold_context.get("recon_suspicious")),
         }
 
     def _prune_prediction_state(self, now):
@@ -505,6 +626,11 @@ class MLIDSPipeline(object):
         for src_ip, state in list(self.recent_prediction_state.items()):
             if (now - state.get("timestamp", 0.0)) > retention_window:
                 del self.recent_prediction_state[src_ip]
+        for src_ip, window in list(self.ml_only_signal_history.items()):
+            while window and (now - window[0]) > retention_window:
+                window.popleft()
+            if not window:
+                del self.ml_only_signal_history[src_ip]
 
     def _reset_runtime_mode_state(self):
         self.pending_threshold_alerts.clear()
@@ -513,6 +639,7 @@ class MLIDSPipeline(object):
         self.last_alert_at.clear()
         self.last_inference_at.clear()
         self.last_inference_observation.clear()
+        self.ml_only_signal_history.clear()
 
     def reset_runtime_session(self):
         self.observed_packets.clear()
@@ -523,6 +650,47 @@ class MLIDSPipeline(object):
         if earlier_timestamp is None or later_timestamp is None:
             return False
         return (later_timestamp - earlier_timestamp) <= self.ml_config.hybrid_correlation_window_seconds
+
+    @staticmethod
+    def _rule_family_from_alert(alert):
+        if alert is None:
+            return ""
+        alert_text = "%s %s" % (
+            getattr(alert, "alert_type", "") or "",
+            getattr(alert, "reason", "") or "",
+        )
+        normalized = alert_text.strip().lower()
+        if any(token in normalized for token in ("scan", "sweep", "unanswered_syn", "failed_connection")):
+            return "recon"
+        if any(token in normalized for token in ("flood", "packet_rate", "syn_rate")):
+            return "volumetric"
+        if normalized:
+            return "suspicious"
+        return ""
+
+    def _build_pending_threshold_state(self, alert, threshold_context=None):
+        threshold_context = dict(threshold_context or {})
+        return {
+            "timestamp": alert.timestamp,
+            "alert_type": alert.alert_type,
+            "severity": getattr(alert, "severity", "high"),
+            "reason": getattr(alert, "reason", ""),
+            "threshold_rule_family": threshold_context.get(
+                "threshold_rule_family",
+                self._rule_family_from_alert(alert),
+            ),
+            "seen_benign_prediction": False,
+            "confidence": None,
+            "suspicion_score": None,
+        }
+
+    def _record_ml_signal(self, src_ip, now):
+        window = self.ml_only_signal_history[src_ip]
+        retention_window = self.ml_config.hybrid_correlation_window_seconds * 2
+        while window and (now - window[0]) > retention_window:
+            window.popleft()
+        window.append(now)
+        return len(window)
 
     @staticmethod
     def _validated_mode(mode):
@@ -539,7 +707,11 @@ class MLIDSPipeline(object):
         return normalized
 
 
-def decide(pipeline, packet_metadata, threshold_alerts=None):
+def decide(pipeline, packet_metadata, threshold_alerts=None, threshold_context=None):
     """Convenience wrapper for one-shot ML pipeline inspection."""
 
-    return pipeline.inspect(packet_metadata, threshold_alerts=threshold_alerts)
+    return pipeline.inspect(
+        packet_metadata,
+        threshold_alerts=threshold_alerts,
+        threshold_context=threshold_context,
+    )

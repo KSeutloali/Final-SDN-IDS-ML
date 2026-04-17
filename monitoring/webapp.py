@@ -12,47 +12,47 @@ PAGE_DEFINITIONS = (
     {
         "name": "dashboard",
         "label": "Overview",
-        "description": "Live controller status and security posture.",
+        "description": "Live security posture and controller health.",
         "template": "dashboard.html",
         "suffix": "",
         "api_suffix": "/api/dashboard",
     },
     {
         "name": "traffic",
-        "label": "Traffic Analytics",
-        "description": "Protocol mix, top talkers, and traffic trends.",
+        "label": "Traffic",
+        "description": "Rates, protocols, and top talkers.",
         "template": "traffic.html",
         "suffix": "/traffic",
         "api_suffix": "/api/traffic",
     },
     {
         "name": "alerts",
-        "label": "Security Alerts",
-        "description": "Live IDS and mitigation events with severity context.",
+        "label": "Alerts",
+        "description": "Detections, severity, and evidence.",
         "template": "alerts.html",
         "suffix": "/alerts",
         "api_suffix": "/api/alerts",
     },
     {
         "name": "blocked_hosts",
-        "label": "Blocked Hosts",
-        "description": "Indefinite analyst-held quarantines with forensic evidence links.",
+        "label": "Blocks",
+        "description": "Current quarantines and analyst release actions.",
         "template": "blocked_hosts.html",
         "suffix": "/blocked-hosts",
         "api_suffix": "/api/blocked-hosts",
     },
     {
         "name": "performance",
-        "label": "Controller Performance",
-        "description": "PacketIn activity, flow installs, and controller events.",
+        "label": "Performance",
+        "description": "PacketIn pace, flow activity, and controller events.",
         "template": "performance.html",
         "suffix": "/performance",
         "api_suffix": "/api/performance",
     },
     {
         "name": "captures",
-        "label": "Packet Capture",
-        "description": "Continuous rolling capture plus preserved forensic alert snapshots.",
+        "label": "Captures",
+        "description": "Rolling PCAPs and preserved alert evidence.",
         "template": "captures.html",
         "suffix": "/captures",
         "api_suffix": "/api/captures",
@@ -60,7 +60,7 @@ PAGE_DEFINITIONS = (
     {
         "name": "ml_ids",
         "label": "ML IDS",
-        "description": "Model status, predictions, and hybrid detection signals.",
+        "description": "Runtime model health and prediction activity.",
         "template": "ml_ids.html",
         "suffix": "/ml-ids",
         "api_suffix": "/api/ml-ids",
@@ -68,12 +68,57 @@ PAGE_DEFINITIONS = (
     {
         "name": "settings",
         "label": "Settings",
-        "description": "Active IDS, firewall, dashboard, and ML configuration.",
+        "description": "Live IDS, firewall, and dashboard config.",
         "template": "settings.html",
         "suffix": "/settings",
         "api_suffix": "/api/settings",
     },
 )
+
+NAV_ICON_PATHS = {
+    "dashboard": (
+        '<path d="M4 12.5 12 5l8 7.5" />'
+        '<path d="M6.5 10.5V20h11V10.5" />'
+    ),
+    "traffic": (
+        '<path d="M4 16h4l3-5 3 3 6-8" />'
+        '<path d="M20 10V6h-4" />'
+    ),
+    "alerts": (
+        '<path d="M12 4 20 18H4L12 4Z" />'
+        '<path d="M12 9v4" />'
+        '<path d="M12 16h.01" />'
+    ),
+    "blocked_hosts": (
+        '<path d="M12 4 18 6.5V12c0 4-2.6 6.8-6 8-3.4-1.2-6-4-6-8V6.5L12 4Z" />'
+        '<path d="m9 15 6-6" />'
+    ),
+    "performance": (
+        '<path d="M4 16h3l2.2-6 3.1 9 2.6-5H20" />'
+    ),
+    "captures": (
+        '<path d="M4 8h6l2 2h8v8a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V8Z" />'
+        '<path d="M9 13h6" />'
+    ),
+    "ml_ids": (
+        '<path d="M9 4v3M15 4v3M9 17v3M15 17v3M4 9h3M17 9h3M4 15h3M17 15h3" />'
+        '<rect x="7" y="7" width="10" height="10" rx="2" />'
+        '<path d="M10 10h4v4h-4z" />'
+    ),
+    "settings": (
+        '<path d="M12 8.5a3.5 3.5 0 1 1 0 7 3.5 3.5 0 0 1 0-7Z" />'
+        '<path d="M19 12a7 7 0 0 0-.08-1l2.08-1.62-2-3.46-2.5 1a7 7 0 0 0-1.73-1L14.5 3h-5l-.27 2.92a7 7 0 0 0-1.73 1l-2.5-1-2 3.46L5.08 11a7 7 0 0 0 0 2L3 14.62l2 3.46 2.5-1a7 7 0 0 0 1.73 1L9.5 21h5l.27-2.92a7 7 0 0 0 1.73-1l2.5 1 2-3.46L18.92 13c.05-.33.08-.66.08-1Z" />'
+    ),
+}
+
+
+def _nav_icon_svg(page_name):
+    paths = NAV_ICON_PATHS.get(page_name, '<circle cx="12" cy="12" r="7" />')
+    return (
+        '<svg class="nav-link__svg" viewBox="0 0 24 24" fill="none" '
+        'stroke="currentColor" stroke-width="1.8" stroke-linecap="round" '
+        'stroke-linejoin="round" aria-hidden="true">%s</svg>'
+    ) % paths
 
 
 def _build_navigation(base_path):
@@ -85,6 +130,7 @@ def _build_navigation(base_path):
                 "name": page["name"],
                 "label": page["label"],
                 "href": href,
+                "icon_svg": _nav_icon_svg(page["name"]),
             }
         )
     return items

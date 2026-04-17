@@ -5,7 +5,7 @@
   <article class="metric-card">
     <span class="metric-card__label">Packet Rate</span>
     <strong class="metric-card__value" id="traffic-packet-rate">0 pkt/s</strong>
-    <span class="metric-card__meta">Derived from latest dashboard samples</span>
+    <span class="metric-card__meta">Latest sample window</span>
   </article>
   <article class="metric-card">
     <span class="metric-card__label">Throughput</span>
@@ -13,14 +13,14 @@
     <span class="metric-card__meta">Controller-visible byte rate</span>
   </article>
   <article class="metric-card">
-    <span class="metric-card__label">Protocols Seen</span>
+    <span class="metric-card__label">Protocols</span>
     <strong class="metric-card__value" id="traffic-protocol-count">0</strong>
-    <span class="metric-card__meta">Distinct protocol labels in counters</span>
+    <span class="metric-card__meta">Distinct labels in counters</span>
   </article>
   <article class="metric-card">
     <span class="metric-card__label">Top Talker</span>
     <strong class="metric-card__value" id="traffic-top-talker">-</strong>
-    <span class="metric-card__meta">Highest packet volume source IP</span>
+    <span class="metric-card__meta">Highest packet volume source</span>
   </article>
 </section>
 
@@ -29,7 +29,7 @@
     <div class="panel__header">
       <div>
         <h2>Traffic Trend</h2>
-        <p>Packets observed over time with near real-time refresh.</p>
+        <p>Packet volume with live refresh.</p>
       </div>
     </div>
     <div class="chart-shell">
@@ -39,8 +39,8 @@
   <article class="panel">
     <div class="panel__header">
       <div>
-        <h2>Protocol Distribution</h2>
-        <p>Share of observed packets by transport or control protocol.</p>
+        <h2>Protocol Share</h2>
+        <p>Packet share by transport or control protocol.</p>
       </div>
     </div>
     <div class="chart-shell chart-shell--compact">
@@ -54,7 +54,7 @@
     <div class="panel__header">
       <div>
         <h2>Top Talkers</h2>
-        <p>Most active source IPs with alert and block counts.</p>
+        <p>Most active sources with alert and block counts.</p>
       </div>
     </div>
     <div class="table-shell">
@@ -75,8 +75,8 @@
   <article class="panel">
     <div class="panel__header">
       <div>
-        <h2>Protocol Breakdown</h2>
-        <p>Current percentage split of packet counters by protocol.</p>
+        <h2>Protocol Table</h2>
+        <p>Current counter split by protocol.</p>
       </div>
     </div>
     <div class="table-shell">

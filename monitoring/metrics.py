@@ -132,7 +132,12 @@ class MetricsStore(object):
             return
 
         status = correlation_event.status
-        if status == "agreement":
+        if status in (
+            "agreement",
+            "threshold_plus_ml",
+            "threshold_enriched_by_ml",
+            "known_class_match",
+        ):
             self.hybrid_agreements_total += 1
             self.hybrid_correlated_total += 1
         elif status == "disagreement":
@@ -140,7 +145,7 @@ class MetricsStore(object):
             self.hybrid_correlated_total += 1
         elif status == "threshold_only":
             self.threshold_only_detections_total += 1
-        elif status == "ml_only":
+        elif status in ("ml_only", "anomaly_only"):
             self.ml_only_detections_total += 1
 
         event = {
