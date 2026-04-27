@@ -98,15 +98,26 @@ class MLIDSPipeline(object):
             fallback_feature_names=RUNTIME_FEATURE_NAMES,
             fallback_positive_labels=ml_config.positive_labels,
         )
-        self.inference_engine = ModelInferenceEngine(self.model_bundle, ml_config)
+        self.anomaly_bundle = load_model(
+            getattr(ml_config, "anomaly_model_path", ""),
+            fallback_feature_names=RUNTIME_FEATURE_NAMES,
+            fallback_positive_labels=("anomalous",),
+        )
+        self.inference_engine = ModelInferenceEngine(
+            self.model_bundle,
+            ml_config,
+            anomaly_bundle=self.anomaly_bundle,
+            mode=getattr(ml_config, "inference_mode", "classifier_only"),
+        )
         self.observed_packets = {}
         self.last_inference_at = {}
         self.last_inference_observation = {}
         self.last_alert_at = {}
+        self.last_alert_state = {}
         self.pending_threshold_alerts = {}
         self.pending_ml_alerts = {}
         self.recent_prediction_state = {}
-        self.ml_only_signal_history = defaultdict(deque)
+        self.decision_window_history = defaultdict(deque)
 
     def effective_mode(self):
         if self.mode == "threshold_only":
@@ -131,6 +142,50 @@ class MLIDSPipeline(object):
             "model_available": self.inference_engine.is_available,
             "model_path": self.model_bundle.source_path or self.ml_config.model_path,
             "model_error": self.model_bundle.load_error,
+            "inference_mode": getattr(self.inference_engine, "selected_mode", "classifier_only"),
+            "effective_inference_mode": getattr(
+                self.inference_engine,
+                "effective_mode",
+                "unavailable",
+            ),
+            "hybrid_classifier_block_threshold": float(
+                getattr(self.ml_config, "hybrid_classifier_block_threshold", 0.0)
+            ),
+            "hybrid_anomaly_support_threshold": float(
+                getattr(self.ml_config, "hybrid_anomaly_support_threshold", 0.0)
+            ),
+            "hybrid_block_repeat_count": int(
+                getattr(self.ml_config, "hybrid_block_repeat_count", 0)
+            ),
+            "hybrid_threshold_near_miss_repeat_count": int(
+                self._hybrid_threshold_near_miss_repeat_count()
+            ),
+            "hybrid_known_family_block_enabled": bool(
+                getattr(self.ml_config, "hybrid_known_family_block_enabled", False)
+            ),
+            "hybrid_block_eligible_families": tuple(
+                getattr(self.ml_config, "hybrid_block_eligible_families", ())
+            ),
+            "hybrid_anomaly_trend_threshold": float(
+                getattr(self.ml_config, "hybrid_anomaly_trend_threshold", 0.0)
+            ),
+            "hybrid_anomaly_only_block_enabled": bool(
+                getattr(self.ml_config, "hybrid_anomaly_only_block_enabled", False)
+            ),
+            "hybrid_anomaly_only_block_threshold": float(
+                getattr(self.ml_config, "hybrid_anomaly_only_block_threshold", 0.0)
+            ),
+            "hybrid_anomaly_only_required_windows": int(
+                self._hybrid_anomaly_only_required_windows()
+            ),
+            "hybrid_memory_window_seconds": float(self._decision_memory_window_seconds()),
+            "anomaly_model_available": self.anomaly_bundle.is_available,
+            "anomaly_model_path": self.anomaly_bundle.source_path or getattr(
+                self.ml_config,
+                "anomaly_model_path",
+                "",
+            ),
+            "anomaly_model_error": self.anomaly_bundle.load_error,
             "available_modes": ids_mode_options(),
             "mode_state_path": getattr(self.ml_config, "mode_state_path", ""),
         }
@@ -204,28 +259,48 @@ class MLIDSPipeline(object):
                 prediction=prediction,
             )
 
-        if self._is_alert_suppressed(prediction.src_ip, prediction.timestamp):
+        decision_memory = self._record_decision_window(
+            prediction,
+            threshold_context=threshold_context,
+        )
+        alert = self._build_alert(
+            prediction,
+            threshold_context=threshold_context,
+            decision_memory=decision_memory,
+        )
+        if alert is None:
             return MLInspectionResult(
                 feature_snapshot=feature_snapshot,
                 prediction=prediction,
             )
-
-        alert = self._build_alert(prediction, threshold_context=threshold_context)
+        if self._is_alert_suppressed(alert):
+            return MLInspectionResult(
+                feature_snapshot=feature_snapshot,
+                prediction=prediction,
+            )
         self.last_alert_at[prediction.src_ip] = prediction.timestamp
+        self.last_alert_state[prediction.src_ip] = {
+            "decision": alert.decision,
+            "reason": alert.reason,
+            "severity": alert.severity,
+            "should_mitigate": bool(alert.should_mitigate),
+        }
         return MLInspectionResult(
             feature_snapshot=feature_snapshot,
             prediction=prediction,
             alert=alert,
         )
 
-    def _build_alert(self, prediction, threshold_context=None):
+    def _build_alert(self, prediction, threshold_context=None, decision_memory=None):
         threshold_context = dict(threshold_context or {})
+        decision_memory = dict(decision_memory or {})
         threshold_triggered = bool(threshold_context.get("threshold_triggered"))
         threshold_suspicious = bool(threshold_context.get("recon_suspicious"))
         agreement = threshold_triggered or self._has_pending_threshold_agreement(
             prediction.src_ip,
             prediction.timestamp,
         )
+        explanations = dict(getattr(prediction, "explanations", {}) or {})
         effective_mode = self.effective_mode()
         should_mitigate = False
         severity = "medium"
@@ -233,55 +308,66 @@ class MLIDSPipeline(object):
         reason = prediction.reason
         correlation_status = "ml_only"
         known_class_match = False
-        repeat_count = 0
+        repeat_count = int(decision_memory.get("signal_window_count", 0) or 0)
+        threshold_suspicious_repeat_count = int(
+            decision_memory.get("threshold_suspicious_repeat_count", 0) or 0
+        )
+        threshold_near_miss_count = int(
+            decision_memory.get("threshold_near_miss_count", 0) or 0
+        )
+        anomaly_only_repeat_count = int(
+            decision_memory.get("anomaly_only_repeat_count", 0) or 0
+        )
+        anomalous_window_count = int(
+            decision_memory.get("anomalous_window_count", 0) or 0
+        )
+        anomaly_trend_delta = float(
+            decision_memory.get("anomaly_trend_delta", 0.0) or 0.0
+        )
+        anomaly_trend_rising = bool(decision_memory.get("anomaly_trend_rising", False))
+        anomaly_score = float(getattr(prediction, "anomaly_score", 0.0) or 0.0)
+        is_anomalous = bool(getattr(prediction, "is_anomalous", False))
+        predicted_family = str(getattr(prediction, "predicted_family", "") or "")
+        classifier_reason = str(explanations.get("classifier_reason", "") or "")
+        classifier_detected = bool(explanations.get("classifier_detected")) or (
+            classifier_reason not in ("", "ml_benign_prediction")
+        )
+        classifier_confidence = float(
+            explanations.get("classifier_confidence", prediction.confidence) or 0.0
+        )
+        classifier_suspicion_score = float(
+            explanations.get(
+                "classifier_suspicion_score",
+                prediction.suspicion_score,
+            )
+            or 0.0
+        )
+        anomaly_reason = str(explanations.get("anomaly_reason", "") or "")
+        anomaly_high = is_anomalous and (
+            anomaly_score >= float(self.ml_config.anomaly_score_threshold)
+        )
+        hybrid_anomaly_support = is_anomalous and (
+            anomaly_score >= float(self.ml_config.hybrid_anomaly_support_threshold)
+        )
+        classifier_high_confidence = classifier_detected and (
+            classifier_suspicion_score >= float(self.ml_config.confidence_threshold)
+        )
+        anomaly_only_signal = is_anomalous and not classifier_detected
+        abnormal_feature_summary = self._summarize_abnormal_features(prediction)
+        hybrid_block_support = {"eligible": False, "reason": "", "reasons": []}
         low_confidence_suspicious = (
             not prediction.is_malicious
             and float(prediction.suspicion_score) >= float(self.ml_config.alert_only_threshold)
         )
 
         if effective_mode == "ml_only":
-            correlation_status = "anomaly_only" if low_confidence_suspicious else "ml_only"
-            decision = "anomaly_only_alert" if low_confidence_suspicious else "ml_only_alert"
-            reason = (
-                "ml_suspicion_above_alert_only_threshold"
-                if low_confidence_suspicious
-                else prediction.reason
-            )
-            repeat_count = self._record_ml_signal(prediction.src_ip, prediction.timestamp)
-            if prediction.is_malicious and prediction.suspicion_score >= self.ml_config.mitigation_threshold:
-                should_mitigate = True
-                severity = "high"
-                decision = "ml_only_block"
-                correlation_status = "ml_only"
-        elif effective_mode == "hybrid":
-            if agreement:
-                severity = "critical"
-                decision = "threshold_enriched_by_ml"
-                reason = "threshold_triggered_with_ml_context"
-                known_class_match = prediction.is_malicious and bool(
-                    threshold_context.get("threshold_rule_family")
-                )
-                correlation_status = (
-                    "known_class_match" if known_class_match else "threshold_plus_ml"
-                )
-            elif threshold_suspicious:
-                severity = "high"
-                decision = "threshold_enriched_by_ml"
-                reason = "subthreshold_recon_pattern_enriched_by_ml"
-                correlation_status = "threshold_enriched_by_ml"
-                repeat_count = self._record_ml_signal(prediction.src_ip, prediction.timestamp)
-                if (
-                    self.hybrid_policy == "high_confidence_block"
-                    and prediction.is_malicious
-                    and prediction.suspicion_score >= self.ml_config.mitigation_threshold
-                    and (
-                        (not self.ml_config.ml_only_escalation_enabled)
-                        or repeat_count >= self.ml_config.ml_only_escalation_count
-                        or int(threshold_context.get("recon_suspicion_score", 0)) >= 2
-                    )
-                ):
-                    should_mitigate = True
-                    decision = "hybrid_ml_block"
+            if anomaly_only_signal:
+                correlation_status = "anomaly_only"
+                decision = "anomaly_only_alert"
+                reason = anomaly_reason or prediction.reason
+                if anomaly_only_repeat_count >= self.ml_config.anomaly_only_escalation_count:
+                    severity = "high"
+                    reason = "repeated_anomaly_pattern_detected"
             else:
                 correlation_status = "anomaly_only" if low_confidence_suspicious else "ml_only"
                 decision = "anomaly_only_alert" if low_confidence_suspicious else "ml_only_alert"
@@ -290,23 +376,145 @@ class MLIDSPipeline(object):
                     if low_confidence_suspicious
                     else prediction.reason
                 )
-                repeat_count = self._record_ml_signal(prediction.src_ip, prediction.timestamp)
-                if (
-                    self.hybrid_policy == "high_confidence_block"
-                    and prediction.is_malicious
-                    and prediction.suspicion_score >= self.ml_config.mitigation_threshold
-                    and (
-                        (not self.ml_config.ml_only_escalation_enabled)
-                        or repeat_count >= self.ml_config.ml_only_escalation_count
+                if classifier_high_confidence and anomaly_high:
+                    severity = "critical"
+                    reason = (
+                        "classifier_family_supported_by_high_anomaly_score"
+                        if predicted_family
+                        else "classifier_prediction_supported_by_high_anomaly_score"
                     )
-                ):
+            if (
+                not anomaly_only_signal
+                and prediction.is_malicious
+                and classifier_detected
+                and classifier_suspicion_score >= self.ml_config.mitigation_threshold
+            ):
+                should_mitigate = True
+                severity = "high"
+                decision = "ml_only_block"
+                correlation_status = "ml_only"
+        elif effective_mode == "hybrid":
+            if agreement:
+                severity = "critical"
+                decision = "threshold_enriched_by_ml"
+                reason = (
+                    "threshold_triggered_with_classifier_and_anomaly_context"
+                    if classifier_high_confidence and anomaly_high
+                    else "threshold_triggered_with_ml_context"
+                )
+                known_class_match = classifier_detected and bool(
+                    threshold_context.get("threshold_rule_family")
+                )
+                correlation_status = (
+                    "known_class_match" if known_class_match else "threshold_plus_ml"
+                )
+            elif threshold_suspicious:
+                severity = "critical" if classifier_high_confidence and anomaly_high else "high"
+                decision = "threshold_enriched_by_ml"
+                if anomaly_only_signal:
+                    reason = "subthreshold_recon_pattern_supported_by_anomaly"
+                elif classifier_high_confidence and anomaly_high:
+                    reason = "subthreshold_recon_pattern_enriched_by_classifier_and_anomaly"
+                else:
+                    reason = "subthreshold_recon_pattern_enriched_by_ml"
+                correlation_status = "threshold_enriched_by_ml"
+                hybrid_block_support = self._evaluate_hybrid_block_support(
+                    prediction=prediction,
+                    threshold_context=threshold_context,
+                    threshold_triggered=threshold_triggered,
+                    threshold_suspicious=threshold_suspicious,
+                    classifier_detected=classifier_detected,
+                    classifier_suspicion_score=classifier_suspicion_score,
+                    predicted_family=predicted_family,
+                    is_anomalous=is_anomalous,
+                    anomaly_score=anomaly_score,
+                    decision_memory=decision_memory,
+                )
+                if hybrid_block_support["eligible"]:
                     should_mitigate = True
-                    severity = "high"
+                    severity = "critical"
                     decision = "hybrid_ml_block"
+                    reason = hybrid_block_support["reason"]
+            else:
+                if anomaly_only_signal:
+                    correlation_status = "anomaly_only"
+                    decision = "anomaly_only_alert"
+                    reason = anomaly_reason or prediction.reason
+                    if anomaly_only_repeat_count >= self.ml_config.anomaly_only_escalation_count:
+                        severity = "high"
+                        reason = "repeated_anomaly_pattern_detected"
+                    hybrid_block_support = self._evaluate_hybrid_block_support(
+                        prediction=prediction,
+                        threshold_context=threshold_context,
+                        threshold_triggered=threshold_triggered,
+                        threshold_suspicious=threshold_suspicious,
+                        classifier_detected=classifier_detected,
+                        classifier_suspicion_score=classifier_suspicion_score,
+                        predicted_family=predicted_family,
+                        is_anomalous=is_anomalous,
+                        anomaly_score=anomaly_score,
+                        decision_memory=decision_memory,
+                    )
+                    if hybrid_block_support["eligible"]:
+                        should_mitigate = True
+                        severity = "critical"
+                        decision = "hybrid_ml_block"
+                        reason = hybrid_block_support["reason"]
+                else:
+                    correlation_status = "anomaly_only" if low_confidence_suspicious else "ml_only"
+                    decision = "anomaly_only_alert" if low_confidence_suspicious else "ml_only_alert"
+                    reason = (
+                        "ml_suspicion_above_alert_only_threshold"
+                        if low_confidence_suspicious
+                        else prediction.reason
+                    )
+                    if (
+                        classifier_high_confidence
+                        and anomaly_high
+                        and (predicted_family or self.hybrid_policy != "alert_only")
+                    ):
+                        if predicted_family:
+                            severity = "critical"
+                            reason = "classifier_family_supported_by_high_anomaly_score"
+                        else:
+                            correlation_status = "ml_anomaly_consensus"
+                            severity = "high"
+                            reason = "classifier_anomaly_consensus_without_threshold_context"
+                    elif (
+                        classifier_detected
+                        and not predicted_family
+                        and self.hybrid_policy != "high_confidence_block"
+                    ):
+                        return None
+                    hybrid_block_support = self._evaluate_hybrid_block_support(
+                        prediction=prediction,
+                        threshold_context=threshold_context,
+                        threshold_triggered=threshold_triggered,
+                        threshold_suspicious=threshold_suspicious,
+                        classifier_detected=classifier_detected,
+                        classifier_suspicion_score=classifier_suspicion_score,
+                        predicted_family=predicted_family,
+                        is_anomalous=is_anomalous,
+                        anomaly_score=anomaly_score,
+                        decision_memory=decision_memory,
+                    )
+                    if hybrid_block_support["eligible"]:
+                        should_mitigate = True
+                        severity = "critical"
+                        decision = "hybrid_ml_block"
+                        reason = hybrid_block_support["reason"]
 
         if should_mitigate and reason == prediction.reason:
             reason = "ml_confidence_above_mitigation_threshold"
 
+        explanation_payload = self._build_alert_explanation(
+            prediction,
+            threshold_context=threshold_context,
+            correlation_status=correlation_status,
+            reason=reason,
+            agreement=agreement,
+            should_mitigate=should_mitigate,
+        )
         details = {
             "agreement_with_threshold": agreement,
             "hybrid_status": correlation_status,
@@ -319,6 +527,9 @@ class MLIDSPipeline(object):
                 threshold_context.get("threshold_recent_event_count", 0) or 0
             ),
             "threshold_context_suspicious": threshold_suspicious,
+            "threshold_auto_quarantine_eligible": bool(
+                threshold_context.get("threshold_auto_quarantine_eligible", True)
+            ),
             "threshold_unanswered_syn_count": int(
                 threshold_context.get("unanswered_syn_count", 0) or 0
             ),
@@ -334,6 +545,54 @@ class MLIDSPipeline(object):
             "forwarding_visibility": threshold_context.get("forwarding_visibility", ""),
             "known_class_match": known_class_match,
             "ml_only_repeat_count": repeat_count,
+            "repeated_window_count": repeat_count,
+            "repeated_threshold_suspicious_windows": threshold_suspicious_repeat_count,
+            "repeated_threshold_near_miss_windows": threshold_near_miss_count,
+            "repeated_anomaly_only_windows": anomaly_only_repeat_count,
+            "repeated_anomalous_windows": anomalous_window_count,
+            "anomaly_trend_delta": round(float(anomaly_trend_delta), 6),
+            "anomaly_trend_rising": anomaly_trend_rising,
+            "hybrid_policy": self.hybrid_policy,
+            "hybrid_block_eligible": bool(hybrid_block_support.get("eligible", False)),
+            "hybrid_block_reasons": list(hybrid_block_support.get("reasons", [])),
+            "hybrid_support_signal_count": int(
+                hybrid_block_support.get("support_count", 0) or 0
+            ),
+            "hybrid_context_signal_count": int(
+                hybrid_block_support.get("context_support_count", 0) or 0
+            ),
+            "block_decision_path": hybrid_block_support.get("decision_path", ""),
+            "final_block_reason": reason if should_mitigate else "",
+            "hybrid_classifier_block_threshold": round(
+                float(self.ml_config.hybrid_classifier_block_threshold),
+                6,
+            ),
+            "hybrid_anomaly_support_threshold": round(
+                float(self.ml_config.hybrid_anomaly_support_threshold),
+                6,
+            ),
+            "hybrid_anomaly_trend_threshold": round(
+                float(getattr(self.ml_config, "hybrid_anomaly_trend_threshold", 0.0)),
+                6,
+            ),
+            "hybrid_anomaly_only_block_enabled": bool(
+                getattr(self.ml_config, "hybrid_anomaly_only_block_enabled", False)
+            ),
+            "hybrid_anomaly_only_block_threshold": round(
+                float(getattr(self.ml_config, "hybrid_anomaly_only_block_threshold", 0.0)),
+                6,
+            ),
+            "hybrid_block_repeat_count": int(self.ml_config.hybrid_block_repeat_count),
+            "hybrid_threshold_near_miss_repeat_count": int(
+                self._hybrid_threshold_near_miss_repeat_count()
+            ),
+            "hybrid_anomaly_only_required_windows": int(
+                self._hybrid_anomaly_only_required_windows()
+            ),
+            "hybrid_memory_window_seconds": round(
+                float(self._decision_memory_window_seconds()),
+                3,
+            ),
             "capture_recommended": correlation_status in ("ml_only", "anomaly_only"),
             "watchlist_candidate": correlation_status in (
                 "threshold_enriched_by_ml",
@@ -343,6 +602,31 @@ class MLIDSPipeline(object):
             "confidence": round(float(prediction.confidence), 6),
             "suspicion_score": round(float(prediction.suspicion_score), 6),
             "label": prediction.label,
+            "predicted_family": predicted_family,
+            "anomaly_score": round(float(anomaly_score), 6),
+            "is_anomalous": is_anomalous,
+            "hybrid_anomaly_support": hybrid_anomaly_support,
+            "classifier_detected": classifier_detected,
+            "classifier_confidence": round(float(classifier_confidence), 6),
+            "classifier_suspicion_score": round(float(classifier_suspicion_score), 6),
+            "anomaly_reason": anomaly_reason,
+            "abnormal_feature_summary": abnormal_feature_summary,
+            "abnormal_feature_details": explanation_payload["feature_context"].get(
+                "abnormal_features",
+                [],
+            ),
+            "baseline_feature_comparisons": explanation_payload["feature_context"].get(
+                "baseline_comparisons",
+                [],
+            ),
+            "top_model_features": explanation_payload["feature_context"].get(
+                "top_model_features",
+                [],
+            ),
+            "explanation_version": explanation_payload.get("version", ""),
+            "explanation_summary": explanation_payload.get("summary", ""),
+            "explanation": explanation_payload,
+            "explanations": explanations,
             "model_name": prediction.model_name,
             "model_version": prediction.model_version,
             "packet_count": round(float(prediction.feature_values.get("packet_count", 0.0)), 3),
@@ -443,11 +727,27 @@ class MLIDSPipeline(object):
             )
         )
 
-    def _is_alert_suppressed(self, src_ip, now):
-        previous = self.last_alert_at.get(src_ip)
+    def _is_alert_suppressed(self, alert):
+        if alert is None or not alert.src_ip:
+            return False
+        previous = self.last_alert_at.get(alert.src_ip)
         if previous is None:
             return False
-        return (now - previous) < self.ml_config.alert_suppression_seconds
+        if (alert.timestamp - previous) >= self.ml_config.alert_suppression_seconds:
+            return False
+
+        previous_state = dict(self.last_alert_state.get(alert.src_ip) or {})
+        if alert.should_mitigate and not previous_state.get("should_mitigate"):
+            return False
+        if self._severity_rank(alert.severity) > self._severity_rank(
+            previous_state.get("severity", "")
+        ):
+            return False
+        if alert.decision != previous_state.get("decision"):
+            return False
+        if alert.reason != previous_state.get("reason"):
+            return False
+        return True
 
     def note_prediction(self, prediction):
         if prediction is None or not prediction.src_ip:
@@ -626,25 +926,295 @@ class MLIDSPipeline(object):
         for src_ip, state in list(self.recent_prediction_state.items()):
             if (now - state.get("timestamp", 0.0)) > retention_window:
                 del self.recent_prediction_state[src_ip]
-        for src_ip, window in list(self.ml_only_signal_history.items()):
-            while window and (now - window[0]) > retention_window:
+        decision_window = self._decision_memory_window_seconds()
+        for src_ip, window in list(self.decision_window_history.items()):
+            while window and (now - window[0].get("timestamp", 0.0)) > decision_window:
                 window.popleft()
             if not window:
-                del self.ml_only_signal_history[src_ip]
+                del self.decision_window_history[src_ip]
 
     def _reset_runtime_mode_state(self):
         self.pending_threshold_alerts.clear()
         self.pending_ml_alerts.clear()
         self.recent_prediction_state.clear()
         self.last_alert_at.clear()
+        self.last_alert_state.clear()
         self.last_inference_at.clear()
         self.last_inference_observation.clear()
-        self.ml_only_signal_history.clear()
+        self.decision_window_history.clear()
 
     def reset_runtime_session(self):
         self.observed_packets.clear()
         self._reset_runtime_mode_state()
         self.feature_extractor.reset()
+
+    def _evaluate_hybrid_block_support(
+        self,
+        prediction,
+        threshold_context,
+        threshold_triggered,
+        threshold_suspicious,
+        classifier_detected,
+        classifier_suspicion_score,
+        predicted_family,
+        is_anomalous,
+        anomaly_score,
+        decision_memory,
+    ):
+        threshold_context = dict(threshold_context or {})
+        decision_memory = dict(decision_memory or {})
+        empty = {
+            "eligible": False,
+            "reason": "",
+            "reasons": [],
+            "decision_path": "",
+            "support_count": 0,
+            "context_support_count": 0,
+        }
+        if self.hybrid_policy not in ("high_confidence_block", "layered_consensus"):
+            return empty
+        if not bool(getattr(prediction, "is_malicious", False)):
+            return empty
+        if (
+            str(threshold_context.get("threshold_reason", "") or "")
+            == "icmp_sweep_threshold_exceeded"
+            and not bool(threshold_context.get("threshold_auto_quarantine_eligible", True))
+        ):
+            return empty
+
+        classifier_threshold = float(self.ml_config.hybrid_classifier_block_threshold)
+        anomaly_support_threshold = float(self.ml_config.hybrid_anomaly_support_threshold)
+        anomaly_block_threshold = max(
+            float(
+                getattr(self.ml_config, "hybrid_anomaly_only_block_threshold", 0.0) or 0.0
+            ),
+            anomaly_support_threshold,
+        )
+        repeat_threshold = int(max(1, self.ml_config.hybrid_block_repeat_count))
+        near_miss_repeat_threshold = int(self._hybrid_threshold_near_miss_repeat_count())
+        anomaly_only_required_windows = int(self._hybrid_anomaly_only_required_windows())
+        recon_score = int(threshold_context.get("recon_suspicion_score", 0) or 0)
+        high_classifier = bool(classifier_detected) and (
+            float(classifier_suspicion_score) >= classifier_threshold
+        )
+        high_anomaly = bool(is_anomalous) and (
+            float(anomaly_score) >= anomaly_support_threshold
+        )
+        very_high_anomaly = bool(is_anomalous) and (
+            float(anomaly_score) >= anomaly_block_threshold
+        )
+        repeat_count = int(decision_memory.get("signal_window_count", 0) or 0)
+        repeated_signal = repeat_count >= repeat_threshold
+        threshold_suspicious_repeat_count = int(
+            decision_memory.get("threshold_suspicious_repeat_count", 0) or 0
+        )
+        threshold_near_miss_count = int(
+            decision_memory.get("threshold_near_miss_count", 0) or 0
+        )
+        anomaly_only_repeat_count = int(
+            decision_memory.get("anomaly_only_repeat_count", 0) or 0
+        )
+        anomalous_window_count = int(
+            decision_memory.get("anomalous_window_count", 0) or 0
+        )
+        repeated_threshold_suspicious = threshold_suspicious_repeat_count >= repeat_threshold
+        repeated_threshold_near_miss = threshold_near_miss_count >= near_miss_repeat_threshold
+        repeated_anomaly_only = anomaly_only_repeat_count >= max(
+            repeat_threshold,
+            int(getattr(self.ml_config, "anomaly_only_escalation_count", 1) or 1),
+        )
+        anomaly_trend_rising = bool(decision_memory.get("anomaly_trend_rising", False))
+        strong_anomaly_only_persistence = (
+            repeated_anomaly_only
+            and anomaly_trend_rising
+            and repeated_signal
+            and anomalous_window_count >= anomaly_only_required_windows
+        )
+        known_family = self._is_block_eligible_family(predicted_family)
+        reasons = []
+        if threshold_suspicious:
+            reasons.append("threshold_suspicious_context")
+        if high_classifier:
+            reasons.append("classifier_confidence_support")
+        if high_anomaly:
+            reasons.append("anomaly_score_support")
+        if very_high_anomaly:
+            reasons.append("very_high_anomaly_score")
+        if repeated_signal:
+            reasons.append("repeated_ml_windows")
+        if repeated_threshold_suspicious:
+            reasons.append("repeated_threshold_suspicious_windows")
+        if repeated_threshold_near_miss:
+            reasons.append("repeated_threshold_near_miss_windows")
+        if repeated_anomaly_only:
+            reasons.append("repeated_anomaly_only_windows")
+        if anomalous_window_count >= anomaly_only_required_windows:
+            reasons.append("repeated_anomalous_windows")
+        if anomaly_trend_rising:
+            reasons.append("rising_anomaly_trend")
+        if recon_score >= 2:
+            reasons.append("elevated_threshold_recon_score")
+        if known_family:
+            reasons.append("known_malicious_family")
+
+        threshold_context_supports_block = sum(
+            int(value)
+            for value in (
+                high_anomaly,
+                repeated_signal,
+                repeated_threshold_suspicious,
+                repeated_threshold_near_miss,
+                anomaly_trend_rising,
+                known_family,
+                recon_score >= 2,
+            )
+        )
+        classifier_context_supports_block = sum(
+            int(value)
+            for value in (
+                high_anomaly,
+                repeated_signal,
+                repeated_threshold_suspicious,
+                repeated_threshold_near_miss,
+                anomaly_trend_rising,
+            )
+        )
+
+        if self.hybrid_policy == "layered_consensus":
+            if threshold_suspicious and high_classifier and threshold_context_supports_block:
+                return {
+                    "eligible": True,
+                    "reason": "threshold_suspicion_elevated_by_strong_ml_evidence",
+                    "reasons": reasons,
+                    "decision_path": "threshold_suspicion_elevated_by_ml",
+                    "support_count": len(reasons),
+                    "context_support_count": threshold_context_supports_block,
+                }
+            if known_family and high_classifier and classifier_context_supports_block >= 2:
+                return {
+                    "eligible": True,
+                    "reason": "known_family_prediction_supported_by_context",
+                    "reasons": reasons,
+                    "decision_path": "classifier_led_known_family_block",
+                    "support_count": len(reasons),
+                    "context_support_count": classifier_context_supports_block,
+                }
+            if (
+                not threshold_suspicious
+                and not threshold_triggered
+                and high_classifier
+                and high_anomaly
+                and repeated_signal
+                and repeated_threshold_near_miss
+                and anomaly_trend_rising
+            ):
+                return {
+                    "eligible": True,
+                    "reason": "repeated_classifier_anomaly_consensus_supported_by_threshold_near_misses",
+                    "reasons": reasons,
+                    "decision_path": "classifier_anomaly_consensus_block",
+                    "support_count": len(reasons),
+                    "context_support_count": 4,
+                }
+            if (
+                getattr(self.ml_config, "hybrid_anomaly_only_block_enabled", False)
+                and not classifier_detected
+                and very_high_anomaly
+                and repeated_anomaly_only
+                and anomaly_trend_rising
+                and repeated_threshold_near_miss
+            ):
+                return {
+                    "eligible": True,
+                    "reason": "repeated_high_anomaly_pattern_supported_by_threshold_near_misses",
+                    "reasons": reasons,
+                    "decision_path": "anomaly_only_narrow_escalation",
+                    "support_count": len(reasons),
+                    "context_support_count": 4,
+                }
+            if (
+                getattr(self.ml_config, "hybrid_anomaly_only_block_enabled", False)
+                and not threshold_suspicious
+                and not threshold_triggered
+                and not classifier_detected
+                and very_high_anomaly
+                and strong_anomaly_only_persistence
+            ):
+                return {
+                    "eligible": True,
+                    "reason": "repeated_high_anomaly_pattern_without_threshold_signal",
+                    "reasons": reasons,
+                    "decision_path": "anomaly_only_strong_persistence_block",
+                    "support_count": len(reasons),
+                    "context_support_count": 4,
+                }
+            return empty
+
+        if threshold_suspicious and high_classifier and threshold_context_supports_block:
+            return {
+                "eligible": True,
+                "reason": "threshold_suspicion_elevated_by_high_confidence_classifier",
+                "reasons": reasons,
+                "decision_path": "threshold_suspicion_elevated_by_ml",
+                "support_count": len(reasons),
+                "context_support_count": threshold_context_supports_block,
+            }
+        if known_family and high_classifier and classifier_context_supports_block:
+            return {
+                "eligible": True,
+                "reason": "known_family_prediction_supported_by_high_confidence_classifier",
+                "reasons": reasons,
+                "decision_path": "classifier_led_known_family_block",
+                "support_count": len(reasons),
+                "context_support_count": classifier_context_supports_block,
+            }
+        if (
+            getattr(self.ml_config, "hybrid_anomaly_only_block_enabled", False)
+            and not classifier_detected
+            and very_high_anomaly
+            and repeated_anomaly_only
+            and anomaly_trend_rising
+            and repeated_threshold_near_miss
+        ):
+            return {
+                "eligible": True,
+                "reason": "repeated_high_anomaly_pattern_supported_by_threshold_near_misses",
+                "reasons": reasons,
+                "decision_path": "anomaly_only_narrow_escalation",
+                "support_count": len(reasons),
+                "context_support_count": 4,
+            }
+        if (
+            getattr(self.ml_config, "hybrid_anomaly_only_block_enabled", False)
+            and not threshold_suspicious
+            and not threshold_triggered
+            and not classifier_detected
+            and very_high_anomaly
+            and strong_anomaly_only_persistence
+        ):
+            return {
+                "eligible": True,
+                "reason": "repeated_high_anomaly_pattern_without_threshold_signal",
+                "reasons": reasons,
+                "decision_path": "anomaly_only_strong_persistence_block",
+                "support_count": len(reasons),
+                "context_support_count": 4,
+            }
+        return empty
+
+    def _is_block_eligible_family(self, predicted_family):
+        if not self.ml_config.hybrid_known_family_block_enabled:
+            return False
+        family = str(predicted_family or "").strip().lower()
+        if not family:
+            return False
+        allowlist = tuple(
+            str(item or "").strip().lower()
+            for item in getattr(self.ml_config, "hybrid_block_eligible_families", ())
+        )
+        if not allowlist:
+            return True
+        return family in allowlist
 
     def _within_correlation_window(self, earlier_timestamp, later_timestamp):
         if earlier_timestamp is None or later_timestamp is None:
@@ -684,13 +1254,275 @@ class MLIDSPipeline(object):
             "suspicion_score": None,
         }
 
-    def _record_ml_signal(self, src_ip, now):
-        window = self.ml_only_signal_history[src_ip]
-        retention_window = self.ml_config.hybrid_correlation_window_seconds * 2
-        while window and (now - window[0]) > retention_window:
+    def _record_decision_window(self, prediction, threshold_context=None):
+        threshold_context = dict(threshold_context or {})
+        if prediction is None or not prediction.src_ip:
+            return {
+                "signal_window_count": 0,
+                "threshold_suspicious_repeat_count": 0,
+                "threshold_near_miss_count": 0,
+                "anomaly_only_repeat_count": 0,
+                "anomalous_window_count": 0,
+                "anomaly_trend_delta": 0.0,
+                "anomaly_trend_rising": False,
+            }
+
+        now = float(getattr(prediction, "timestamp", 0.0) or 0.0)
+        explanations = dict(getattr(prediction, "explanations", {}) or {})
+        classifier_reason = str(explanations.get("classifier_reason", "") or "")
+        classifier_detected = bool(explanations.get("classifier_detected")) or (
+            classifier_reason not in ("", "ml_benign_prediction")
+        )
+        anomaly_only = bool(getattr(prediction, "is_anomalous", False)) and not classifier_detected
+
+        window = self.decision_window_history[prediction.src_ip]
+        retention_window = self._decision_memory_window_seconds()
+        while window and (now - window[0].get("timestamp", 0.0)) > retention_window:
             window.popleft()
-        window.append(now)
-        return len(window)
+        window.append(
+            {
+                "timestamp": now,
+                "threshold_triggered": bool(threshold_context.get("threshold_triggered")),
+                "threshold_suspicious": bool(threshold_context.get("recon_suspicious")),
+                "threshold_near_miss": bool(threshold_context.get("recon_suspicious"))
+                and not bool(threshold_context.get("threshold_triggered")),
+                "classifier_detected": classifier_detected,
+                "anomaly_only": anomaly_only,
+                "is_anomalous": bool(getattr(prediction, "is_anomalous", False)),
+                "anomaly_score": float(getattr(prediction, "anomaly_score", 0.0) or 0.0),
+            }
+        )
+
+        recent_entries = list(window)
+        signal_window_count = len(recent_entries)
+        threshold_suspicious_repeat_count = sum(
+            1 for item in recent_entries if item.get("threshold_suspicious")
+        )
+        threshold_near_miss_count = sum(
+            1 for item in recent_entries if item.get("threshold_near_miss")
+        )
+        anomaly_only_repeat_count = sum(
+            1 for item in recent_entries if item.get("anomaly_only")
+        )
+        anomalous_scores = [
+            float(item.get("anomaly_score", 0.0) or 0.0)
+            for item in recent_entries
+            if item.get("is_anomalous")
+        ]
+        anomaly_trend_delta = 0.0
+        if getattr(prediction, "is_anomalous", False) and len(anomalous_scores) >= 2:
+            prior_scores = anomalous_scores[:-1]
+            anomaly_trend_delta = float(anomalous_scores[-1]) - (
+                sum(prior_scores) / float(len(prior_scores))
+            )
+        anomaly_trend_rising = (
+            len(anomalous_scores) >= 2
+            and anomaly_trend_delta
+            >= float(getattr(self.ml_config, "hybrid_anomaly_trend_threshold", 0.0))
+        )
+        return {
+            "signal_window_count": signal_window_count,
+            "threshold_suspicious_repeat_count": threshold_suspicious_repeat_count,
+            "threshold_near_miss_count": threshold_near_miss_count,
+            "anomaly_only_repeat_count": anomaly_only_repeat_count,
+            "anomalous_window_count": len(anomalous_scores),
+            "anomaly_trend_delta": anomaly_trend_delta,
+            "anomaly_trend_rising": anomaly_trend_rising,
+        }
+
+    def _hybrid_threshold_near_miss_repeat_count(self):
+        configured = getattr(
+            self.ml_config,
+            "hybrid_threshold_near_miss_repeat_count",
+            self.ml_config.hybrid_block_repeat_count,
+        )
+        return max(1, int(configured or 0))
+
+    def _hybrid_anomaly_only_required_windows(self):
+        repeat_threshold = int(max(1, self.ml_config.hybrid_block_repeat_count))
+        anomaly_only_escalation = int(
+            max(1, getattr(self.ml_config, "anomaly_only_escalation_count", 1) or 1)
+        )
+        return max(
+            4,
+            repeat_threshold + 1,
+            anomaly_only_escalation + 1,
+        )
+
+    def _decision_memory_window_seconds(self):
+        return max(
+            float(self.ml_config.hybrid_correlation_window_seconds) * 3.0,
+            float(getattr(self.ml_config, "feature_window_seconds", 1) or 1.0)
+            * float(max(2, int(self.ml_config.hybrid_block_repeat_count) + 1)),
+            float(self.ml_config.alert_suppression_seconds)
+            + float(self.ml_config.hybrid_correlation_window_seconds),
+        )
+
+    @staticmethod
+    def _summarize_abnormal_features(prediction):
+        explanations = dict(getattr(prediction, "explanations", {}) or {})
+        feature_context = dict(explanations.get("feature_context") or {})
+        abnormal_features = list(feature_context.get("abnormal_features") or [])
+        if abnormal_features:
+            return [
+                str(item.get("summary", "")).strip()
+                for item in abnormal_features
+                if str(item.get("summary", "")).strip()
+            ][:4]
+
+        feature_values = dict(getattr(prediction, "feature_values", {}) or {})
+        candidate_thresholds = (
+            ("unanswered_syn_count", 1.0),
+            ("unanswered_syn_ratio", 0.05),
+            ("recon_probe_density", 0.2),
+            ("unique_destination_ports", 3.0),
+            ("unique_destination_ips", 2.0),
+            ("destination_port_fanout_ratio", 0.3),
+            ("packet_rate_delta", 0.1),
+            ("destination_port_fanout_delta", 0.1),
+            ("packet_rate_trend", 0.1),
+            ("unique_destination_port_trend", 0.1),
+            ("host_unique_dest_ip_baseline_ratio", 1.1),
+            ("host_unique_dest_port_baseline_ratio", 1.1),
+        )
+        summaries = []
+        for feature_name, minimum_value in candidate_thresholds:
+            value = float(feature_values.get(feature_name, 0.0) or 0.0)
+            if abs(value) < minimum_value:
+                continue
+            summaries.append("%s=%.3f" % (feature_name, value))
+            if len(summaries) >= 4:
+                break
+        return summaries
+
+    @staticmethod
+    def _build_alert_explanation(
+        prediction,
+        threshold_context=None,
+        correlation_status="ml_only",
+        reason="",
+        agreement=False,
+        should_mitigate=False,
+    ):
+        threshold_context = dict(threshold_context or {})
+        prediction_explanations = dict(getattr(prediction, "explanations", {}) or {})
+        feature_context = dict(prediction_explanations.get("feature_context") or {})
+        classifier = dict(prediction_explanations.get("classifier") or {})
+        anomaly = dict(prediction_explanations.get("anomaly") or {})
+        model_metadata = dict(prediction_explanations.get("model_metadata") or {})
+        predicted_family = str(getattr(prediction, "predicted_family", "") or "")
+        anomaly_score = float(getattr(prediction, "anomaly_score", 0.0) or 0.0)
+        is_anomalous = bool(getattr(prediction, "is_anomalous", False))
+
+        if correlation_status == "known_class_match":
+            summary = (
+                "Threshold and ML agreed on a known attack family '%s'."
+                % (predicted_family or str(getattr(prediction, "label", "") or ""))
+            )
+        elif correlation_status == "threshold_plus_ml":
+            summary = (
+                "Threshold and ML both flagged the same host within the correlation window."
+            )
+        elif correlation_status == "threshold_enriched_by_ml":
+            if should_mitigate:
+                summary = (
+                    "Threshold saw a suspicious but sub-threshold pattern, and ML evidence elevated it into a block."
+                )
+            else:
+                summary = (
+                    "Threshold saw a suspicious but sub-threshold pattern, and ML added confidence and context."
+                )
+        elif correlation_status == "anomaly_only":
+            if should_mitigate:
+                summary = (
+                    "Only the anomaly detector repeatedly flagged this behavior, and hybrid escalated it because the anomaly score kept rising alongside threshold near-miss context."
+                )
+            else:
+                summary = (
+                    "Only the anomaly detector flagged this behavior, so the system kept it at alert/watchlist level."
+                )
+        elif correlation_status == "ml_only":
+            family_text = (
+                " for family '%s'" % predicted_family
+                if predicted_family
+                else ""
+            )
+            if should_mitigate:
+                summary = (
+                    "Only ML flagged this behavior%s, and the configured hybrid block rule was satisfied."
+                    % family_text
+                )
+            else:
+                summary = "Only ML flagged this behavior%s." % family_text
+        elif correlation_status == "ml_anomaly_consensus":
+            if should_mitigate:
+                summary = (
+                    "Classifier and anomaly evidence repeatedly agreed on this host without a threshold trigger, and the configured hybrid consensus rule escalated it into a block."
+                )
+            else:
+                summary = (
+                    "Classifier and anomaly evidence agreed on this host, so hybrid raised an ML-backed alert even without a threshold trigger."
+                )
+        else:
+            summary = str(prediction_explanations.get("summary", "") or "")
+
+        if reason and correlation_status in ("threshold_plus_ml", "threshold_enriched_by_ml"):
+            summary = "%s Reason: %s." % (summary.rstrip("."), reason)
+        elif not summary:
+            summary = str(prediction_explanations.get("summary", "") or reason or "")
+
+        return {
+            "version": str(prediction_explanations.get("version", "") or "1"),
+            "summary": summary.strip(),
+            "agreement_with_threshold": bool(agreement),
+            "correlation_status": correlation_status,
+            "classifier": classifier,
+            "anomaly": {
+                **anomaly,
+                "score": anomaly_score if anomaly else anomaly_score,
+                "detected": bool(anomaly.get("detected", is_anomalous)),
+            },
+            "threshold": {
+                "triggered": bool(threshold_context.get("threshold_triggered", False)),
+                "reason": str(threshold_context.get("threshold_reason", "") or ""),
+                "rule_family": str(
+                    threshold_context.get("threshold_rule_family", "") or ""
+                ),
+                "severity": str(threshold_context.get("threshold_severity", "") or ""),
+                "recent_event_count": int(
+                    threshold_context.get("threshold_recent_event_count", 0) or 0
+                ),
+                "auto_quarantine_eligible": bool(
+                    threshold_context.get("threshold_auto_quarantine_eligible", True)
+                ),
+                "unanswered_syn_count": int(
+                    threshold_context.get("unanswered_syn_count", 0) or 0
+                ),
+                "unique_destination_hosts": int(
+                    threshold_context.get("scan_unique_destination_hosts", 0) or 0
+                ),
+                "unique_destination_ports": int(
+                    threshold_context.get("scan_unique_destination_ports", 0) or 0
+                ),
+                "recon_visible_traffic": bool(
+                    threshold_context.get("recon_visible_traffic", False)
+                ),
+                "forwarding_visibility": str(
+                    threshold_context.get("forwarding_visibility", "") or ""
+                ),
+            },
+            "feature_context": {
+                "abnormal_features": list(feature_context.get("abnormal_features") or []),
+                "baseline_comparisons": list(
+                    feature_context.get("baseline_comparisons") or []
+                ),
+                "top_model_features": list(feature_context.get("top_model_features") or []),
+                "observation_window_seconds": float(
+                    feature_context.get("observation_window_seconds", 0.0) or 0.0
+                ),
+            },
+            "model_metadata": model_metadata,
+        }
 
     @staticmethod
     def _validated_mode(mode):
@@ -701,10 +1533,20 @@ class MLIDSPipeline(object):
 
     @staticmethod
     def _validated_hybrid_policy(policy):
-        normalized = (policy or "alert_only").strip().lower()
+        normalized = (policy or "layered_consensus").strip().lower()
         if normalized not in VALID_HYBRID_POLICIES:
-            return "alert_only"
+            return "layered_consensus"
         return normalized
+
+    @staticmethod
+    def _severity_rank(severity):
+        ranks = {
+            "low": 1,
+            "medium": 2,
+            "high": 3,
+            "critical": 4,
+        }
+        return ranks.get(str(severity or "").strip().lower(), 0)
 
 
 def decide(pipeline, packet_metadata, threshold_alerts=None, threshold_context=None):

@@ -4,21 +4,38 @@
   const SIDEBAR_STORAGE_KEY = "sdn-dashboard-sidebar-collapsed";
   const SIDEBAR_MOBILE_MEDIA_QUERY = "(max-width: 960px)";
   const CAPTURE_PAGE_SIZE = 5;
+  const TOKEN_ACRONYMS = {
+    ids: "IDS",
+    ip: "IP",
+    ml: "ML",
+    icmp: "ICMP",
+    tcp: "TCP",
+    udp: "UDP",
+    dpid: "DPID",
+    pcap: "PCAP",
+  };
 
   const state = {
     charts: {},
     lastPayload: null,
     pollTimer: null,
     isFetching: false,
+    hasHydrated: false,
     idsModePendingValue: null,
     idsModeRequestInFlight: false,
-    idsModeStatusMessage: "Ready",
-    idsModeStatusTone: "success",
+    idsModeStatusMessage: "Loading runtime mode...",
+    idsModeStatusTone: "warning",
     sidebarMediaQuery: null,
+    tableRenderSignatures: {},
     captureVisibleRows: {
       snapshots: CAPTURE_PAGE_SIZE,
       files: CAPTURE_PAGE_SIZE,
     },
+    captureSelection: {
+      snapshotKeys: new Set(),
+      filePaths: new Set(),
+    },
+    captureDeleteInFlight: false,
     captureScrollbarDrag: null,
     captureScrollbarReady: false,
   };
@@ -29,6 +46,7 @@
       return;
     }
 
+    body.setAttribute("data-dashboard-hydrated", "false");
     ensureSidebarToggle();
     initializeSidebar();
     initializeCaptureScrollbars();
@@ -61,6 +79,7 @@
     try {
       const payload = await fetchPayload(apiEndpoint());
       state.lastPayload = payload;
+      markDashboardHydrated();
       updateConnectionStatus(payload, true);
       updateChrome(payload);
       updatePage(payload);
@@ -69,6 +88,16 @@
     } finally {
       state.isFetching = false;
       scheduleNextTick(pollIntervalMs());
+    }
+  }
+
+  function markDashboardHydrated() {
+    if (state.hasHydrated) {
+      return;
+    }
+    state.hasHydrated = true;
+    if (document.body) {
+      document.body.setAttribute("data-dashboard-hydrated", "true");
     }
   }
 
@@ -123,11 +152,13 @@
   function updateChrome(payload) {
     const summary = payload.summary || {};
     const ml = payload.ml || {};
+    const modeLabel = ml.effective_mode_label || formatIdsModeLabel(ml.effective_mode || summary.ml_mode || "threshold");
 
-    setText(
-      "chrome-ml-mode",
-      ml.effective_mode_label || formatIdsModeLabel(ml.effective_mode || summary.ml_mode || "threshold")
-    );
+    const modeBadge = document.getElementById("chrome-ml-mode");
+    if (modeBadge) {
+      modeBadge.className = "badge " + idsModeBadgeClass(ml.effective_mode_api || ml.effective_mode || "threshold");
+      modeBadge.textContent = modeLabel;
+    }
     setText("chrome-last-updated", formatTimestamp(payload.generated_at));
     setText("footer-total-packets", formatNumber(summary.total_packets));
     setText("footer-switches", formatNumber(summary.active_switches));
@@ -277,8 +308,12 @@
   function updateCapturesPage(payload) {
     const captures = payload.captures || {};
     const continuous = captures.continuous || {};
-    const sessions = captures.snapshots || [];
-    const files = captures.continuous_files || [];
+    const snapshotRows = captures.snapshots || [];
+    const fileRows = captures.continuous_files || [];
+    syncCaptureSelections(snapshotRows, fileRows);
+
+    const sessions = snapshotRows;
+    const files = fileRows;
     const totalBytes = files.reduce(function (total, row) {
       return total + (row.size_bytes || 0);
     }, 0) + sessions.reduce(function (total, row) {
@@ -293,12 +328,13 @@
         ? "Interfaces: " + (continuous.interfaces || []).map(function (row) { return row.interface; }).join(", ")
         : "None"
     );
-    setText("captures-status", continuous.active ? "active" : "inactive");
+    setText("captures-status", continuous.active ? "Active" : "Inactive");
     setText("captures-last-scan", formatTimestamp(captures.last_scan_at));
     setText("captures-total-size", formatBytes(totalBytes));
 
-    renderCaptureSessionsTable("captures-session-table", sessions);
-    renderCaptureFilesTable("captures-file-table", files);
+    const visibleSnapshots = renderCaptureSessionsTable("captures-session-table", sessions);
+    const visibleFiles = renderCaptureFilesTable("captures-file-table", files);
+    syncCaptureSelectionControls(visibleSnapshots, visibleFiles, sessions, files);
     window.requestAnimationFrame(syncCaptureScrollbars);
   }
 
@@ -450,15 +486,15 @@
     const predictionCounts = ml.prediction_counts || {};
     const alertCounts = ml.alert_counts || {};
 
-    setText("ml-effective-mode", ml.effective_mode_label || formatIdsModeLabel(ml.effective_mode || "threshold"));
+    setText("ml-effective-mode", ml.effective_mode_label || formatDisplayValue(ml.effective_mode || "threshold"));
     setText(
       "ml-hybrid-policy",
       "Selected: " +
         (ml.selected_mode_label || formatIdsModeLabel(ml.selected_mode || "threshold")) +
         " · Policy: " +
-        (ml.hybrid_policy || "alert_only")
+        formatDisplayValue(ml.hybrid_policy || "layered_consensus")
     );
-    setText("ml-model-status", ml.model_available ? "Yes" : "No");
+    setText("ml-model-status", ml.model_available ? "Available" : "Unavailable");
     setText("ml-model-path", ml.model_path || "-");
     setText("ml-predictions-total", formatNumber(predictionCounts.total || 0));
     setText(
@@ -554,8 +590,8 @@
       ? subset.map(function (row) {
           return "<tr>" +
             "<td>" + escapeHtml(shortTimestamp(row.timestamp)) + "</td>" +
-            "<td><span class=\"badge " + severityBadgeClass(row.severity) + "\">" + escapeHtml(row.alert_type || "-") + "</span></td>" +
-            "<td>" + escapeHtml(row.detector || "-") + "</td>" +
+            "<td><span class=\"badge " + severityBadgeClass(row.severity) + "\">" + escapeHtml(formatDisplayValue(row.alert_type || "-")) + "</span></td>" +
+            "<td>" + escapeHtml(formatDisplayValue(row.detector || "-")) + "</td>" +
             "<td>" + escapeHtml(row.src_ip || "-") + "</td>" +
             "<td class=\"table-wrap\">" + escapeHtml(row.reason || "-") + "</td>" +
           "</tr>";
@@ -569,16 +605,33 @@
       return;
     }
 
+    const tableSignature = rows.length
+      ? rows.map(function (row) {
+          return String(row.row_id || [
+            row.timestamp || "",
+            row.alert_type || "",
+            row.detector || "",
+            row.src_ip || "",
+            row.status || "",
+            row.reason || "",
+          ].join("|"));
+        }).join("::")
+      : "__empty__";
+    if (state.tableRenderSignatures[elementId] === tableSignature) {
+      return;
+    }
+    state.tableRenderSignatures[elementId] = tableSignature;
+
     tbody.innerHTML = rows.length
       ? rows.map(function (row) {
           return "<tr>" +
-            "<td>" + escapeHtml(shortTimestamp(row.timestamp)) + "</td>" +
+            "<td>" + renderEllipsisText(shortTimestamp(row.timestamp), 16, row.timestamp || "-") + "</td>" +
             "<td><span class=\"badge " + severityBadgeClass(row.severity) + "\">" + escapeHtml(row.severity || "-") + "</span></td>" +
-            "<td>" + escapeHtml(row.alert_type || "-") + "</td>" +
-            "<td>" + escapeHtml(row.detector || "-") + "</td>" +
-            "<td>" + escapeHtml(row.src_ip || "-") + "</td>" +
+            "<td>" + renderEllipsisText(formatDisplayValue(row.alert_type), 22, row.alert_type || "-") + "</td>" +
+            "<td>" + renderEllipsisText(formatDisplayValue(row.detector), 16, row.detector || "-") + "</td>" +
+            "<td>" + renderEllipsisText(row.src_ip || "-", 18, row.src_ip || "-") + "</td>" +
             "<td class=\"table-reason-cell\">" + renderEllipsisText(row.reason || "-", 58) + "</td>" +
-            "<td>" + escapeHtml(row.quarantine_status || row.status || "-") + "</td>" +
+            "<td>" + renderEllipsisText(formatDisplayValue(row.quarantine_status || row.status || "-"), 18, row.quarantine_status || row.status || "-") + "</td>" +
             "<td>" + renderCaptureLink(row.related_capture) + "</td>" +
           "</tr>";
         }).join("")
@@ -596,7 +649,7 @@
       ? subset.map(function (row) {
           return "<tr>" +
             "<td>" + escapeHtml(row.src_ip || "-") + "</td>" +
-            "<td>" + escapeHtml(row.detector || "-") + "</td>" +
+            "<td>" + escapeHtml(formatDisplayValue(row.detector || "-")) + "</td>" +
             "<td class=\"table-wrap\">" + escapeHtml(row.reason || "-") + "</td>" +
             "<td>" + escapeHtml(row.created_at || "-") + "</td>" +
           "</tr>";
@@ -614,8 +667,8 @@
       ? rows.map(function (row) {
           return "<tr>" +
             "<td>" + escapeHtml(row.src_ip || "-") + "</td>" +
-            "<td>" + escapeHtml(row.detector || "-") + "</td>" +
-            "<td>" + escapeHtml(row.alert_type || "-") + "</td>" +
+            "<td>" + escapeHtml(formatDisplayValue(row.detector || "-")) + "</td>" +
+            "<td>" + escapeHtml(formatDisplayValue(row.alert_type || "-")) + "</td>" +
             "<td class=\"table-wrap\">" + escapeHtml(row.reason || "-") + "</td>" +
             "<td>" + escapeHtml(row.created_at || "-") + "</td>" +
             "<td>" + renderCaptureLink(row.related_capture) + "</td>" +
@@ -686,7 +739,7 @@
   function renderCaptureSessionsTable(elementId, rows) {
     const tbody = document.getElementById(elementId);
     if (!tbody) {
-      return;
+      return [];
     }
 
     const visibleRows = limitedCaptureRows("snapshots", rows);
@@ -696,25 +749,27 @@
             ? "<span class=\"badge badge--danger\">Preserved</span>"
             : "<span class=\"badge badge--neutral\">" + escapeHtml(row.status || "stored") + "</span>";
           return "<tr>" +
+            "<td class=\"table-select-cell\">" + renderCaptureSelectionCell("snapshot", row.snapshot_key || row.snapshot_name, row.snapshot_name) + "</td>" +
             "<td>" + renderEllipsisText(row.snapshot_name || "-", 42) + "</td>" +
             "<td>" + renderEllipsisText(formatCaptureTimestamp(row.timestamp), 19, row.timestamp || "-") + "</td>" +
             "<td>" + renderEllipsisText(row.source_ip || "-", 16) + "</td>" +
-            "<td>" + renderEllipsisText(row.detector || "-", 12) + "</td>" +
-            "<td>" + renderEllipsisText(row.alert_type || "-", 24) + "</td>" +
+            "<td>" + renderEllipsisText(formatDisplayValue(row.detector), 14, row.detector || "-") + "</td>" +
+            "<td>" + renderEllipsisText(formatDisplayValue(row.alert_type), 24, row.alert_type || "-") + "</td>" +
             "<td>" + formatNumber(row.file_count || 0) + "</td>" +
             "<td>" + escapeHtml(row.size_human || "0 B") + "</td>" +
             "<td>" + statusBadge + "</td>" +
             "<td>" + renderPrimaryDownloadLink(row) + "</td>" +
           "</tr>";
         }).join("")
-      : emptyRow(9, "No preserved alert snapshots yet.");
+      : emptyRow(10, "No preserved alert snapshots yet.");
     syncCaptureMoreButton("snapshots", rows.length);
+    return visibleRows;
   }
 
   function renderCaptureFilesTable(elementId, rows) {
     const tbody = document.getElementById(elementId);
     if (!tbody) {
-      return;
+      return [];
     }
 
     const visibleRows = limitedCaptureRows("files", rows);
@@ -724,18 +779,20 @@
             ? "<a class=\"table-link\" href=\"" + escapeAttribute(row.download_path) + "\">Download</a>"
             : "-";
           return "<tr>" +
-            "<td>" + escapeHtml(row.session_name || "-") + "</td>" +
-            "<td>" + escapeHtml(row.scenario || "-") + "</td>" +
+            "<td class=\"table-select-cell\">" + renderCaptureSelectionCell("file", row.relative_path, row.file_name) + "</td>" +
+            "<td>" + renderEllipsisText(formatDisplayValue(row.session_name), 18, row.session_name || "-") + "</td>" +
+            "<td>" + renderEllipsisText(formatDisplayValue(row.scenario), 24, row.scenario || "-") + "</td>" +
             "<td>" + escapeHtml(row.interface || "-") + "</td>" +
             "<td>" + renderEllipsisText(row.file_name || "-", 40) + "</td>" +
-            "<td>" + escapeHtml(row.status || "-") + "</td>" +
+            "<td>" + renderEllipsisText(formatDisplayValue(row.status), 14, row.status || "-") + "</td>" +
             "<td>" + escapeHtml(row.size_human || "0 B") + "</td>" +
             "<td>" + escapeHtml(shortTimestamp(row.modified_at || row.timestamp || "-")) + "</td>" +
             "<td>" + downloadCell + "</td>" +
           "</tr>";
         }).join("")
-      : emptyRow(8, "No capture files available.");
+      : emptyRow(9, "No capture files available.");
     syncCaptureMoreButton("files", rows.length);
+    return visibleRows;
   }
 
   function limitedCaptureRows(section, rows) {
@@ -778,7 +835,264 @@
     button.textContent = "Show " + Math.min(CAPTURE_PAGE_SIZE, remaining) + " more";
   }
 
+  function captureSnapshotKey(row) {
+    if (!row) {
+      return "";
+    }
+    return String(row.snapshot_key || row.snapshot_name || "").trim();
+  }
+
+  function syncCaptureSelections(snapshotRows, fileRows) {
+    const validSnapshotKeys = new Set(
+      (snapshotRows || []).map(function (row) {
+        return captureSnapshotKey(row);
+      }).filter(Boolean)
+    );
+    const validFilePaths = new Set(
+      (fileRows || []).map(function (row) {
+        return String(row.relative_path || "").trim();
+      }).filter(Boolean)
+    );
+
+    state.captureSelection.snapshotKeys.forEach(function (key) {
+      if (!validSnapshotKeys.has(key)) {
+        state.captureSelection.snapshotKeys.delete(key);
+      }
+    });
+    state.captureSelection.filePaths.forEach(function (path) {
+      if (!validFilePaths.has(path)) {
+        state.captureSelection.filePaths.delete(path);
+      }
+    });
+  }
+
+  function renderCaptureSelectionCell(kind, key, label) {
+    const normalizedKey = String(key || "").trim();
+    if (!normalizedKey) {
+      return "-";
+    }
+    const selected = kind === "snapshot"
+      ? state.captureSelection.snapshotKeys.has(normalizedKey)
+      : state.captureSelection.filePaths.has(normalizedKey);
+    const safeLabel = label ? String(label) : normalizedKey;
+    return "<input class=\"table-checkbox js-capture-select\" type=\"checkbox\" " +
+      "data-capture-kind=\"" + escapeAttribute(kind) + "\" " +
+      "data-capture-key=\"" + escapeAttribute(normalizedKey) + "\" " +
+      "aria-label=\"Select " + escapeAttribute(safeLabel) + "\" " +
+      (selected ? "checked " : "") +
+      (state.captureDeleteInFlight ? "disabled" : "") +
+      "/>";
+  }
+
+  function syncCaptureSelectionControls(visibleSnapshots, visibleFiles, allSnapshots, allFiles) {
+    syncCaptureSelectAllCheckbox(
+      "snapshot",
+      (visibleSnapshots || []).map(function (row) { return captureSnapshotKey(row); }).filter(Boolean)
+    );
+    syncCaptureSelectAllCheckbox(
+      "file",
+      (visibleFiles || []).map(function (row) { return String(row.relative_path || "").trim(); }).filter(Boolean)
+    );
+    const totalRows = (allSnapshots || []).length + (allFiles || []).length;
+    setCaptureSelectionSummary(totalRows);
+    updateCaptureActionButtons(totalRows);
+  }
+
+  function syncCaptureSelectAllCheckbox(kind, keys) {
+    const selector = document.querySelector(
+      ".js-capture-select-all[data-capture-kind=\"" + kind + "\"]"
+    );
+    if (!selector) {
+      return;
+    }
+    const rows = (keys || []).filter(Boolean);
+    if (!rows.length) {
+      selector.checked = false;
+      selector.indeterminate = false;
+      selector.disabled = true;
+      return;
+    }
+    selector.disabled = state.captureDeleteInFlight;
+    const selectedCount = rows.filter(function (key) {
+      return kind === "snapshot"
+        ? state.captureSelection.snapshotKeys.has(key)
+        : state.captureSelection.filePaths.has(key);
+    }).length;
+    selector.checked = selectedCount > 0 && selectedCount === rows.length;
+    selector.indeterminate = selectedCount > 0 && selectedCount < rows.length;
+  }
+
+  function setCaptureSelectionSummary(totalRows) {
+    const element = document.getElementById("captures-selection-summary");
+    if (!element) {
+      return;
+    }
+    const selected = selectedCaptureCount();
+    if (!selected) {
+      element.textContent = totalRows
+        ? "No captures selected."
+        : "No captures available.";
+      return;
+    }
+    element.textContent = String(selected) + " capture" + (selected === 1 ? "" : "s") + " selected.";
+  }
+
+  function selectedCaptureCount() {
+    return state.captureSelection.snapshotKeys.size + state.captureSelection.filePaths.size;
+  }
+
+  function setCaptureActionFeedback(message, tone) {
+    const element = document.getElementById("captures-action-feedback");
+    if (!element) {
+      return;
+    }
+    element.textContent = message;
+    element.className = "capture-toolbar__feedback capture-toolbar__feedback--" + (tone || "neutral");
+  }
+
+  function updateCaptureActionButtons(totalRows) {
+    const deleteSelectedButton = document.getElementById("captures-delete-selected");
+    const deleteAllButton = document.getElementById("captures-delete-all");
+    const hasAnyRows = Number(totalRows || 0) > 0;
+    const hasSelection = selectedCaptureCount() > 0;
+
+    if (deleteSelectedButton) {
+      deleteSelectedButton.disabled = !hasSelection || state.captureDeleteInFlight;
+    }
+    if (deleteAllButton) {
+      deleteAllButton.disabled = !hasAnyRows || state.captureDeleteInFlight;
+    }
+  }
+
+  function toggleCaptureSelection(kind, key, selected) {
+    const normalizedKey = String(key || "").trim();
+    if (!normalizedKey) {
+      return;
+    }
+    const selectionSet = kind === "snapshot"
+      ? state.captureSelection.snapshotKeys
+      : state.captureSelection.filePaths;
+    if (selected) {
+      selectionSet.add(normalizedKey);
+      return;
+    }
+    selectionSet.delete(normalizedKey);
+  }
+
+  function toggleCaptureSelectAll(kind, selected) {
+    const selector = ".js-capture-select[data-capture-kind=\"" + kind + "\"]";
+    document.querySelectorAll(selector).forEach(function (checkbox) {
+      const key = checkbox.getAttribute("data-capture-key");
+      checkbox.checked = selected;
+      toggleCaptureSelection(kind, key, selected);
+    });
+  }
+
+  async function deleteSelectedCaptures() {
+    const snapshotNames = Array.from(state.captureSelection.snapshotKeys);
+    const filePaths = Array.from(state.captureSelection.filePaths);
+    const selectedCount = snapshotNames.length + filePaths.length;
+    if (!selectedCount) {
+      setCaptureActionFeedback("Select at least one capture before deleting.", "warning");
+      return;
+    }
+
+    const confirmationMessage = "Delete " + selectedCount + " selected capture item(s)? This action cannot be undone.";
+    if (!window.confirm(confirmationMessage)) {
+      return;
+    }
+
+    await performCaptureDelete(
+      basePath() + "/api/captures/delete-selected",
+      {
+        snapshot_names: snapshotNames,
+        file_paths: filePaths,
+      },
+      "Selected captures deleted."
+    );
+  }
+
+  async function deleteAllCaptures() {
+    if (!window.confirm("Delete all stored captures and snapshots? This action cannot be undone.")) {
+      return;
+    }
+
+    await performCaptureDelete(
+      basePath() + "/api/captures/delete-all",
+      {
+        confirm: true,
+      },
+      "All captures deleted."
+    );
+  }
+
+  async function performCaptureDelete(endpoint, requestBody, successMessage) {
+    state.captureDeleteInFlight = true;
+    setCaptureActionFeedback("Deleting capture artifacts...", "warning");
+    updateCaptureActionButtons(state.lastPayload && state.lastPayload.captures
+      ? ((state.lastPayload.captures.snapshots || []).length + (state.lastPayload.captures.continuous_files || []).length)
+      : 0);
+
+    try {
+      const response = await fetch(endpoint, {
+        method: "POST",
+        cache: "no-store",
+        headers: {
+          "Accept": "application/json",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(requestBody || {}),
+      });
+      const result = await response.json().catch(function () {
+        return {};
+      });
+      if (!response.ok || !result.accepted) {
+        throw new Error((result && (result.reason || result.status)) || ("capture_delete_failed_" + response.status));
+      }
+
+      state.captureSelection.snapshotKeys.clear();
+      state.captureSelection.filePaths.clear();
+      setCaptureActionFeedback(successMessage, "success");
+      scheduleNextTick(120);
+    } catch (error) {
+      console.error(error);
+      setCaptureActionFeedback("Capture deletion failed. Check dashboard logs and try again.", "danger");
+    } finally {
+      state.captureDeleteInFlight = false;
+      if (state.lastPayload) {
+        updateCapturesPage(state.lastPayload);
+      } else {
+        updateCaptureActionButtons(0);
+      }
+    }
+  }
+
   async function handleActionChange(event) {
+    const selectAllCapture = event.target.closest(".js-capture-select-all");
+    if (selectAllCapture) {
+      const captureKind = selectAllCapture.getAttribute("data-capture-kind");
+      if (captureKind === "snapshot" || captureKind === "file") {
+        toggleCaptureSelectAll(captureKind, !!selectAllCapture.checked);
+        if (state.lastPayload) {
+          updateCapturesPage(state.lastPayload);
+        }
+      }
+      return;
+    }
+
+    const captureSelector = event.target.closest(".js-capture-select");
+    if (captureSelector) {
+      const captureKind = captureSelector.getAttribute("data-capture-kind");
+      const captureKey = captureSelector.getAttribute("data-capture-key");
+      if ((captureKind === "snapshot" || captureKind === "file") && captureKey) {
+        toggleCaptureSelection(captureKind, captureKey, !!captureSelector.checked);
+        if (state.lastPayload) {
+          updateCapturesPage(state.lastPayload);
+        }
+      }
+      return;
+    }
+
     const selector = event.target.closest(".js-ids-mode-selector");
     if (!selector) {
       return;
@@ -850,6 +1164,18 @@
     const captureMoreButton = event.target.closest(".js-capture-more");
     if (captureMoreButton) {
       revealMoreCaptureRows(captureMoreButton);
+      return;
+    }
+
+    const deleteSelectedButton = event.target.closest(".js-capture-delete-selected");
+    if (deleteSelectedButton) {
+      await deleteSelectedCaptures();
+      return;
+    }
+
+    const deleteAllButton = event.target.closest(".js-capture-delete-all");
+    if (deleteAllButton) {
+      await deleteAllCaptures();
       return;
     }
 
@@ -1054,6 +1380,10 @@
     setText("ids-mode-selected", selectedLabel);
     setText("ids-mode-effective", effectiveLabel);
     setText("ids-mode-help", idsModeHelpText(ml));
+    if (!state.idsModePendingValue && state.idsModeStatusMessage === "Loading runtime mode...") {
+      state.idsModeStatusMessage = "Ready";
+      state.idsModeStatusTone = "success";
+    }
     updateIdsModeStatusElement();
   }
 
@@ -1103,7 +1433,7 @@
             "<td>" + escapeHtml(shortTimestamp(row.timestamp)) + "</td>" +
             "<td>" + escapeHtml(row.src_ip || "-") + "</td>" +
             "<td>" + formatDecimal(row.confidence) + "</td>" +
-            "<td>" + escapeHtml(row.status || row.action || row.alert_type || "-") + "</td>" +
+            "<td>" + escapeHtml(formatDisplayValue(row.status || row.action || row.alert_type || "-")) + "</td>" +
             "<td class=\"table-wrap\">" + escapeHtml(row.reason || "-") + "</td>" +
           "</tr>";
         }).join("")
@@ -1119,8 +1449,8 @@
     tbody.innerHTML = rows.length
       ? rows.map(function (row) {
           const classification = row.is_malicious
-            ? "<span class=\"badge badge--danger\">malicious</span>"
-            : "<span class=\"badge badge--success\">benign</span>";
+            ? "<span class=\"badge badge--danger\">Malicious</span>"
+            : "<span class=\"badge badge--success\">Benign</span>";
           return "<tr>" +
             "<td>" + escapeHtml(row.src_ip || "-") + "</td>" +
             "<td>" + escapeHtml(row.label || "-") + "</td>" +
@@ -1143,7 +1473,7 @@
           return "<tr>" +
             "<td>" + escapeHtml(shortTimestamp(row.timestamp)) + "</td>" +
             "<td>" + escapeHtml(row.src_ip || "-") + "</td>" +
-            "<td><span class=\"badge " + severityBadgeClass(row.status) + "\">" + escapeHtml(row.status || "-") + "</span></td>" +
+            "<td><span class=\"badge " + severityBadgeClass(row.status) + "\">" + escapeHtml(formatDisplayValue(row.status || "-")) + "</span></td>" +
             "<td>" + formatDecimal(row.confidence) + "</td>" +
             "<td class=\"table-wrap\">" + escapeHtml(row.reason || "-") + "</td>" +
           "</tr>";
@@ -1627,15 +1957,60 @@
 
   function formatSettingValue(value) {
     if (Array.isArray(value)) {
-      return value.length ? value.join(", ") : "(none)";
+      return value.length
+        ? value.map(function (item) { return formatDisplayValue(item); }).join(", ")
+        : "(none)";
     }
     if (typeof value === "boolean") {
-      return value ? "true" : "false";
+      return value ? "Enabled" : "Disabled";
     }
     if (value === null || value === undefined || value === "") {
       return "-";
     }
-    return String(value);
+    return formatDisplayValue(value);
+  }
+
+  function formatDisplayValue(value) {
+    if (value === null || value === undefined || value === "") {
+      return "-";
+    }
+    const text = String(value).trim();
+    if (!text) {
+      return "-";
+    }
+    if (text.indexOf("/") !== -1 || text.indexOf("\\") !== -1 || text.indexOf(".") !== -1 || text.indexOf(":") !== -1) {
+      return text;
+    }
+    if (text.indexOf("_") !== -1 || text.indexOf("-") !== -1) {
+      return text
+        .split(/[_-]+/)
+        .filter(Boolean)
+        .map(titleCaseToken)
+        .join(" ");
+    }
+    if (/^[a-z]+(?:[A-Z][a-z0-9]+)+$/.test(text)) {
+      return text
+        .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+        .split(" ")
+        .map(titleCaseToken)
+        .join(" ");
+    }
+    if (/^[a-z0-9]+$/.test(text)) {
+      return titleCaseToken(text);
+    }
+    return text;
+  }
+
+  function titleCaseToken(value) {
+    const token = String(value || "").trim();
+    if (!token) {
+      return "";
+    }
+    const lower = token.toLowerCase();
+    if (Object.prototype.hasOwnProperty.call(TOKEN_ACRONYMS, lower)) {
+      return TOKEN_ACRONYMS[lower];
+    }
+    return lower.charAt(0).toUpperCase() + lower.slice(1);
   }
 
   function prettyKey(value) {
@@ -1681,6 +2056,17 @@
       return "badge--info";
     }
     return "badge--neutral";
+  }
+
+  function idsModeBadgeClass(mode) {
+    const normalized = normalizeIdsMode(mode);
+    if (normalized === "hybrid") {
+      return "badge--warning";
+    }
+    if (normalized === "ml") {
+      return "badge--info";
+    }
+    return "badge--success";
   }
 
   function escapeHtml(value) {

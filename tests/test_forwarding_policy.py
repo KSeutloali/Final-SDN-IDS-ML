@@ -12,6 +12,7 @@ def packet_stub(**overrides):
         "is_ipv4": True,
         "transport_protocol": "tcp",
         "tcp_syn_only": False,
+        "is_fragmented_tcp_probe": False,
         "is_icmp": False,
         "icmp_type": None,
         "src_port": 12345,
@@ -43,6 +44,19 @@ class ForwardingPolicyTests(unittest.TestCase):
             should_install_forward_flow(
                 IDSConfig(),
                 packet_stub(transport_protocol="udp", dst_port=161),
+            )
+        )
+
+    def test_fragmented_tcp_probe_packets_stay_controller_visible(self):
+        self.assertFalse(
+            should_install_forward_flow(
+                IDSConfig(),
+                packet_stub(
+                    transport_protocol="ipv4",
+                    is_fragmented_tcp_probe=True,
+                    src_port=None,
+                    dst_port=None,
+                ),
             )
         )
 

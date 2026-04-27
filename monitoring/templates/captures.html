@@ -4,8 +4,8 @@
 <section class="card-grid card-grid--metrics">
   <article class="metric-card">
     <span class="metric-card__label">Rolling</span>
-    <strong class="metric-card__value" id="captures-status">inactive</strong>
-    <span class="metric-card__meta" id="captures-active-session">Waiting for capture</span>
+    <strong class="metric-card__value" id="captures-status">Loading...</strong>
+    <span class="metric-card__meta" id="captures-active-session">Loading capture interfaces...</span>
   </article>
   <article class="metric-card">
     <span class="metric-card__label">Ring Files</span>
@@ -32,6 +32,37 @@
 <section class="panel">
   <div class="panel__header">
     <div>
+      <h2>Capture Management</h2>
+      <p>Select individual captures to remove, or clear all stored capture artifacts.</p>
+    </div>
+  </div>
+  <div class="capture-toolbar">
+    <div class="capture-toolbar__summary" id="captures-selection-summary">No captures selected.</div>
+    <div class="capture-toolbar__actions">
+      <button
+        class="table-button table-button--danger js-capture-delete-selected"
+        id="captures-delete-selected"
+        type="button"
+        disabled
+      >
+        Delete Selected
+      </button>
+      <button
+        class="table-button table-button--danger-outline js-capture-delete-all"
+        id="captures-delete-all"
+        type="button"
+        disabled
+      >
+        Delete All
+      </button>
+    </div>
+  </div>
+  <p class="capture-toolbar__feedback" id="captures-action-feedback">Selections are kept while this page stays open.</p>
+</section>
+
+<section class="panel">
+  <div class="panel__header">
+    <div>
       <h2>Alert Snapshots</h2>
       <p>Snapshots preserved automatically when detections occur.</p>
     </div>
@@ -41,6 +72,14 @@
       <table class="data-table data-table--snapshots">
         <thead>
           <tr>
+            <th class="table-select-cell">
+              <input
+                class="table-checkbox js-capture-select-all"
+                type="checkbox"
+                data-capture-kind="snapshot"
+                aria-label="Select all visible snapshots"
+              >
+            </th>
             <th>Snapshot</th>
             <th>Timestamp</th>
             <th>Source IP</th>
@@ -89,6 +128,14 @@
       <table class="data-table data-table--captures-files">
         <thead>
           <tr>
+            <th class="table-select-cell">
+              <input
+                class="table-checkbox js-capture-select-all"
+                type="checkbox"
+                data-capture-kind="file"
+                aria-label="Select all visible ring captures"
+              >
+            </th>
             <th>Capture Type</th>
             <th>Scenario</th>
             <th>Interface</th>

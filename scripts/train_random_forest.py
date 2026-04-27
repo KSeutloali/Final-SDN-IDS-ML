@@ -29,6 +29,15 @@ import sys
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from ml.feature_engineering import (
+    baseline_ratio,
+    burstiness,
+    entropy,
+    inter_arrival_stats,
+    new_value_ratio,
+    standard_deviation,
+    trend_delta,
+)
 from ml.feature_extractor import RUNTIME_FEATURE_NAMES
 from ml.model_loader import save_model_bundle
 from ml.runtime_forest import export_random_forest_model
@@ -42,6 +51,60 @@ LIVE_COMPATIBLE_SCHEMA_FIELDS = (
     "protocol",
     "timestamp",
 )
+EXTENDED_RUNTIME_FEATURE_NAMES = (
+    "inter_arrival_mean_short",
+    "inter_arrival_std_short",
+    "inter_arrival_mean_medium",
+    "inter_arrival_std_medium",
+    "burstiness_short",
+    "destination_ip_entropy_short",
+    "destination_port_entropy_short",
+    "protocol_entropy_short",
+    "packet_size_std_short",
+    "new_destination_ip_ratio_short",
+    "new_destination_port_ratio_short",
+    "host_packet_rate_baseline_ratio",
+    "host_unique_dest_ip_baseline_ratio",
+    "host_unique_dest_port_baseline_ratio",
+    "host_unanswered_syn_ratio_baseline_ratio",
+    "packet_rate_trend",
+    "unique_destination_port_trend",
+    "unanswered_syn_ratio_trend",
+)
+
+
+def summarize_feature_importances(feature_names, importance_values, top_k=6):
+    """Return stable, lightweight feature-importance metadata for runtime bundles."""
+
+    resolved_names = list(feature_names or ())
+    resolved_values = list(importance_values or ())
+    if not resolved_names or not resolved_values:
+        return {
+            "feature_importance_available": False,
+            "global_feature_importance": [],
+            "top_global_features": [],
+            "feature_importance_source": "random_forest_global_importance",
+        }
+
+    paired_entries = []
+    for feature_name, importance in zip(resolved_names, resolved_values):
+        paired_entries.append(
+            {
+                "feature": str(feature_name),
+                "importance": round(float(importance), 8),
+            }
+        )
+    paired_entries.sort(
+        key=lambda item: (-float(item["importance"]), str(item["feature"]))
+    )
+    return {
+        "feature_importance_available": any(
+            float(item["importance"]) > 0.0 for item in paired_entries
+        ),
+        "global_feature_importance": paired_entries,
+        "top_global_features": paired_entries[: max(0, int(top_k or 0))],
+        "feature_importance_source": "random_forest_global_importance",
+    }
 
 
 @dataclass(frozen=True)
@@ -56,6 +119,7 @@ class ResolvedSchema(object):
     protocol_column: str = None
     run_id_column: str = None
     scenario_column: str = None
+    scenario_family_column: str = None
     scenario_id_column: str = None
     collection_id_column: str = None
     packet_count_column: str = None
@@ -119,6 +183,17 @@ def _protocol_indicator(pandas_module, protocol_series, numeric_code, text_name)
     return ((lower_series == text_name) | (numeric_series == numeric_code)).astype("int64")
 
 
+def _normalized_protocol_series(pandas_module, protocol_series):
+    lower_series = protocol_series.astype(str).str.strip().str.lower()
+    normalized = lower_series.copy()
+    numeric_series = pandas_module.to_numeric(protocol_series, errors="coerce")
+    normalized = normalized.where(~numeric_series.eq(6), "tcp")
+    normalized = normalized.where(~numeric_series.eq(17), "udp")
+    normalized = normalized.where(~numeric_series.eq(1), "icmp")
+    normalized = normalized.where(normalized != "", "unknown")
+    return normalized
+
+
 def _binary_label_series(label_series):
     labels = label_series.fillna("unknown").astype(str).str.strip()
     lower_labels = labels.str.lower()
@@ -126,6 +201,103 @@ def _binary_label_series(label_series):
         lambda value: any(keyword in value for keyword in BENIGN_LABEL_KEYWORDS)
     )
     return benign_mask.map({True: "benign", False: "malicious"})
+
+
+def _clean_label_value(value):
+    text = str(value).strip()
+    return "" if text.lower() in ("", "none", "nan", "null") else text
+
+
+def _is_benign_label(value):
+    return any(keyword in str(value).strip().lower() for keyword in BENIGN_LABEL_KEYWORDS)
+
+
+def _aggregate_group_label(values, label_mode):
+    labels = [_clean_label_value(value) for value in values]
+    non_benign = sorted({label for label in labels if label and label != "benign"})
+    if label_mode == "binary":
+        return "malicious" if non_benign else "benign"
+    if not non_benign:
+        return "benign"
+    if len(non_benign) == 1:
+        return non_benign[0]
+    raise ValueError(
+        "Grouped splitting requires each group/window to map to one non-benign %s label. "
+        "Observed labels: %s"
+        % (label_mode, ", ".join(non_benign))
+    )
+
+
+def build_training_labels(
+    raw_labels,
+    label_mode="binary",
+    scenario_family_values=None,
+    scenario_id_values=None,
+    scenario_values=None,
+):
+    """Resolve training target labels for binary and multi-class modes."""
+
+    label_mode = str(label_mode or "binary").strip().lower()
+    cleaned_labels = [_clean_label_value(value) for value in raw_labels]
+
+    if label_mode == "binary":
+        resolved_labels = [
+            "benign" if _is_benign_label(value) else "malicious"
+            for value in cleaned_labels
+        ]
+        return resolved_labels, ["malicious"]
+
+    if label_mode == "family":
+        if scenario_family_values is None:
+            raise ValueError("Label mode 'family' requires scenario-family metadata.")
+        family_values = [_clean_label_value(value) for value in scenario_family_values]
+        resolved_labels = []
+        for raw_label, family_value in zip(cleaned_labels, family_values):
+            if _is_benign_label(raw_label):
+                resolved_labels.append("benign")
+                continue
+            if not family_value:
+                raise ValueError(
+                    "Label mode 'family' requires scenario-family values for all non-benign rows."
+                )
+            resolved_labels.append(family_value)
+        positive_labels = sorted({value for value in resolved_labels if value != "benign"})
+        return resolved_labels, positive_labels
+
+    if label_mode == "scenario":
+        if scenario_id_values is None and scenario_values is None:
+            raise ValueError(
+                "Label mode 'scenario' requires scenario ID or scenario name metadata."
+            )
+        scenario_id_values = (
+            [_clean_label_value(value) for value in scenario_id_values]
+            if scenario_id_values is not None
+            else [""] * len(cleaned_labels)
+        )
+        scenario_values = (
+            [_clean_label_value(value) for value in scenario_values]
+            if scenario_values is not None
+            else [""] * len(cleaned_labels)
+        )
+        resolved_labels = []
+        for raw_label, scenario_id_value, scenario_value in zip(
+            cleaned_labels,
+            scenario_id_values,
+            scenario_values,
+        ):
+            if _is_benign_label(raw_label):
+                resolved_labels.append("benign")
+                continue
+            scenario_label = scenario_id_value or scenario_value
+            if not scenario_label:
+                raise ValueError(
+                    "Label mode 'scenario' requires scenario ID or scenario name values for all non-benign rows."
+                )
+            resolved_labels.append(scenario_label)
+        positive_labels = sorted({value for value in resolved_labels if value != "benign"})
+        return resolved_labels, positive_labels
+
+    raise ValueError("Unsupported label mode: %s" % label_mode)
 
 
 def _summarize_feature_sources(source_map):
@@ -193,6 +365,11 @@ def resolve_schema_columns(column_names, args):
             lookup,
             ("scenario", "scenario_name"),
             explicit_name=args.scenario_column,
+        ),
+        scenario_family_column=_resolve_column(
+            lookup,
+            ("scenario_family", "attack_family", "family"),
+            explicit_name=getattr(args, "scenario_family_column", None),
         ),
         scenario_id_column=_resolve_column(
             lookup,
@@ -289,6 +466,278 @@ def _resolve_group_column(schema):
     return None
 
 
+def _timestamp_to_epoch_seconds(timestamp_value):
+    if hasattr(timestamp_value, "timestamp"):
+        return float(timestamp_value.timestamp())
+    return float(timestamp_value)
+
+
+def build_extended_runtime_feature_frame(
+    pandas_module,
+    grouped_frame,
+    aggregated_frame,
+    groupby_keys,
+    window_seconds,
+):
+    """Build richer live-aligned engineered features from grouped runtime windows.
+
+    These features are currently computed for alignment and future retraining
+    without changing the default model vector, which remains RUNTIME_FEATURE_NAMES.
+    """
+
+    if (
+        grouped_frame is None
+        or grouped_frame.empty
+        or aggregated_frame is None
+        or aggregated_frame.empty
+    ):
+        return pandas_module.DataFrame(
+            columns=list(groupby_keys) + list(EXTENDED_RUNTIME_FEATURE_NAMES)
+        )
+
+    window_seconds = float(window_seconds)
+    medium_window_seconds = max(30.0, window_seconds)
+    long_window_seconds = max(120.0, medium_window_seconds)
+    history_key_names = [name for name in groupby_keys if name != "window_start"]
+
+    per_window_records = {}
+    ordered_grouped_frame = grouped_frame.sort_values(list(groupby_keys) + ["timestamp"])
+    for group_key, group in ordered_grouped_frame.groupby(groupby_keys, sort=False):
+        if not isinstance(group_key, tuple):
+            group_key = (group_key,)
+        timestamps = [
+            _timestamp_to_epoch_seconds(value)
+            for value in group["timestamp"].tolist()
+        ]
+        destination_ips = [
+            value for value in group["dst_ip"].astype(str).tolist() if value
+        ]
+        destination_ports = [
+            int(value)
+            for value in group["dst_port"].tolist()
+            if int(value) >= 0
+        ]
+        protocol_values = group["protocol_name"].astype(str).tolist()
+        packet_sizes = (
+            group["byte_count"] / group["packet_count"].clip(lower=1.0)
+        ).astype("float64").tolist()
+        inter_arrival_mean_short, inter_arrival_std_short = inter_arrival_stats(
+            timestamps
+        )
+        per_window_records[group_key] = {
+            "timestamps": timestamps,
+            "destination_ip_set": set(destination_ips),
+            "destination_port_set": set(destination_ports),
+            "packet_count": float(group["packet_count"].sum()),
+            "syn_counts": float(group["syn_counts"].sum()),
+            "unanswered_syn_count": 0.0,
+            "inter_arrival_mean_short": inter_arrival_mean_short,
+            "inter_arrival_std_short": inter_arrival_std_short,
+            "burstiness_short": burstiness(
+                inter_arrival_mean_short,
+                inter_arrival_std_short,
+            ),
+            "destination_ip_entropy_short": entropy(destination_ips),
+            "destination_port_entropy_short": entropy(destination_ports),
+            "protocol_entropy_short": entropy(protocol_values),
+            "packet_size_std_short": standard_deviation(packet_sizes),
+        }
+
+    extension_rows = []
+    alpha = 0.25
+    ordered_aggregated = aggregated_frame.sort_values(list(groupby_keys)).reset_index(drop=True)
+    host_groups = (
+        ordered_aggregated.groupby(history_key_names, sort=False)
+        if history_key_names
+        else [((), ordered_aggregated)]
+    )
+
+    for host_group_key, host_frame in host_groups:
+        history = []
+        baseline = {}
+        if history_key_names and not isinstance(host_group_key, tuple):
+            host_group_key = (host_group_key,)
+        elif not history_key_names:
+            host_group_key = ()
+
+        for _, row in host_frame.iterrows():
+            current_group_key = tuple(row[name] for name in groupby_keys)
+            current_window = per_window_records.get(current_group_key, {})
+            window_start_seconds = _timestamp_to_epoch_seconds(row["window_start"])
+            window_end_seconds = window_start_seconds + window_seconds
+
+            medium_cutoff = window_end_seconds - medium_window_seconds
+            long_cutoff = window_end_seconds - long_window_seconds
+            medium_history = [
+                summary for summary in history if summary["window_end_seconds"] >= medium_cutoff
+            ]
+            long_history = [
+                summary for summary in history if summary["window_end_seconds"] >= long_cutoff
+            ]
+            medium_summaries = list(medium_history)
+            current_summary = {
+                "window_end_seconds": window_end_seconds,
+                "timestamps": list(current_window.get("timestamps", [])),
+                "destination_ip_set": set(current_window.get("destination_ip_set", set())),
+                "destination_port_set": set(current_window.get("destination_port_set", set())),
+                "packet_count": float(row["packet_count"]),
+                "syn_counts": float(row["syn_counts"]),
+                "unanswered_syn_count": float(row["unanswered_syn_count"]),
+            }
+            medium_summaries.append(current_summary)
+
+            medium_timestamps = []
+            medium_destination_ports = set()
+            medium_syn_count = 0.0
+            medium_unanswered_syn_count = 0.0
+            medium_packet_count = 0.0
+            for summary in medium_summaries:
+                medium_timestamps.extend(summary["timestamps"])
+                medium_destination_ports.update(summary["destination_port_set"])
+                medium_syn_count += float(summary["syn_counts"])
+                medium_unanswered_syn_count += float(summary["unanswered_syn_count"])
+                medium_packet_count += float(summary["packet_count"])
+
+            medium_timestamps = sorted(medium_timestamps)
+            medium_observation_window_seconds = (
+                max(
+                    1.0,
+                    min(
+                        medium_window_seconds,
+                        window_end_seconds - medium_timestamps[0] + 0.001,
+                    ),
+                )
+                if medium_timestamps
+                else 1.0
+            )
+            inter_arrival_mean_medium, inter_arrival_std_medium = inter_arrival_stats(
+                medium_timestamps
+            )
+            medium_packet_rate = medium_packet_count / medium_observation_window_seconds
+            medium_unique_destination_port_rate = (
+                float(len(medium_destination_ports)) / medium_observation_window_seconds
+                if medium_destination_ports
+                else 0.0
+            )
+            medium_unanswered_syn_ratio = (
+                min(1.0, medium_unanswered_syn_count / medium_syn_count)
+                if medium_syn_count
+                else 0.0
+            )
+
+            historical_destination_ips = set()
+            historical_destination_ports = set()
+            for summary in long_history:
+                historical_destination_ips.update(summary["destination_ip_set"])
+                historical_destination_ports.update(summary["destination_port_set"])
+
+            host_packet_rate_baseline_ratio = baseline_ratio(
+                row["packet_rate"],
+                baseline.get("packet_rate"),
+            )
+            host_unique_dest_ip_baseline_ratio = baseline_ratio(
+                row["unique_destination_ips"],
+                baseline.get("unique_destination_ips"),
+            )
+            host_unique_dest_port_baseline_ratio = baseline_ratio(
+                row["unique_destination_ports"],
+                baseline.get("unique_destination_ports"),
+            )
+            host_unanswered_syn_ratio_baseline_ratio = baseline_ratio(
+                row["unanswered_syn_ratio"],
+                baseline.get("unanswered_syn_ratio"),
+            )
+
+            extension_row = dict((name, row[name]) for name in groupby_keys)
+            extension_row.update(
+                {
+                    "inter_arrival_mean_short": float(
+                        current_window.get("inter_arrival_mean_short", 0.0)
+                    ),
+                    "inter_arrival_std_short": float(
+                        current_window.get("inter_arrival_std_short", 0.0)
+                    ),
+                    "inter_arrival_mean_medium": float(inter_arrival_mean_medium),
+                    "inter_arrival_std_medium": float(inter_arrival_std_medium),
+                    "burstiness_short": float(current_window.get("burstiness_short", 0.0)),
+                    "destination_ip_entropy_short": float(
+                        current_window.get("destination_ip_entropy_short", 0.0)
+                    ),
+                    "destination_port_entropy_short": float(
+                        current_window.get("destination_port_entropy_short", 0.0)
+                    ),
+                    "protocol_entropy_short": float(
+                        current_window.get("protocol_entropy_short", 0.0)
+                    ),
+                    "packet_size_std_short": float(
+                        current_window.get("packet_size_std_short", 0.0)
+                    ),
+                    "new_destination_ip_ratio_short": float(
+                        new_value_ratio(
+                            current_window.get("destination_ip_set", set()),
+                            historical_destination_ips,
+                        )
+                    ),
+                    "new_destination_port_ratio_short": float(
+                        new_value_ratio(
+                            current_window.get("destination_port_set", set()),
+                            historical_destination_ports,
+                        )
+                    ),
+                    "host_packet_rate_baseline_ratio": float(
+                        host_packet_rate_baseline_ratio
+                    ),
+                    "host_unique_dest_ip_baseline_ratio": float(
+                        host_unique_dest_ip_baseline_ratio
+                    ),
+                    "host_unique_dest_port_baseline_ratio": float(
+                        host_unique_dest_port_baseline_ratio
+                    ),
+                    "host_unanswered_syn_ratio_baseline_ratio": float(
+                        host_unanswered_syn_ratio_baseline_ratio
+                    ),
+                    "packet_rate_trend": float(
+                        trend_delta(row["packet_rate"], medium_packet_rate)
+                    ),
+                    "unique_destination_port_trend": float(
+                        trend_delta(
+                            row["unique_destination_ports"] / window_seconds,
+                            medium_unique_destination_port_rate,
+                        )
+                    ),
+                    "unanswered_syn_ratio_trend": float(
+                        trend_delta(
+                            row["unanswered_syn_ratio"],
+                            medium_unanswered_syn_ratio,
+                        )
+                    ),
+                }
+            )
+            extension_rows.append(extension_row)
+
+            for baseline_name in (
+                "packet_rate",
+                "unique_destination_ips",
+                "unique_destination_ports",
+                "unanswered_syn_ratio",
+            ):
+                current_value = float(row[baseline_name])
+                previous_value = baseline.get(baseline_name)
+                if previous_value is None:
+                    baseline[baseline_name] = current_value
+                else:
+                    baseline[baseline_name] = (
+                        (1.0 - alpha) * float(previous_value)
+                    ) + (alpha * current_value)
+            history.append(current_summary)
+
+    if not extension_rows:
+        return pandas_module.DataFrame(
+            columns=list(groupby_keys) + list(EXTENDED_RUNTIME_FEATURE_NAMES)
+        )
+    return pandas_module.DataFrame(extension_rows)
+
+
 def build_runtime_training_frame(pandas_module, dataframe, args):
     """Map CIC parquet columns into runtime-observable host-window features."""
 
@@ -301,6 +750,9 @@ def build_runtime_training_frame(pandas_module, dataframe, args):
     dst_port_column = schema.dst_port_column
     protocol_column = schema.protocol_column
     group_column = _resolve_group_column(schema)
+    scenario_column = schema.scenario_column
+    scenario_family_column = schema.scenario_family_column
+    scenario_id_column = schema.scenario_id_column
     packet_count_column = schema.packet_count_column
     backward_packet_count_column = schema.backward_packet_count_column
     byte_count_column = schema.byte_count_column
@@ -309,7 +761,34 @@ def build_runtime_training_frame(pandas_module, dataframe, args):
     syn_flag_column = schema.syn_flag_column
     rst_flag_column = schema.rst_flag_column
 
-    labels = _binary_label_series(_text_series(pandas_module, dataframe, label_column))
+    raw_label_series = _text_series(pandas_module, dataframe, label_column)
+    scenario_family_series = (
+        _text_series(pandas_module, dataframe, scenario_family_column, "")
+        if scenario_family_column
+        else None
+    )
+    scenario_id_series = (
+        _text_series(pandas_module, dataframe, scenario_id_column, "")
+        if scenario_id_column
+        else None
+    )
+    scenario_series = (
+        _text_series(pandas_module, dataframe, scenario_column, "")
+        if scenario_column
+        else None
+    )
+    resolved_labels, positive_labels = build_training_labels(
+        raw_label_series.tolist(),
+        label_mode=args.label_mode,
+        scenario_family_values=(
+            scenario_family_series.tolist() if scenario_family_series is not None else None
+        ),
+        scenario_id_values=(
+            scenario_id_series.tolist() if scenario_id_series is not None else None
+        ),
+        scenario_values=(scenario_series.tolist() if scenario_series is not None else None),
+    )
+    labels = pandas_module.Series(resolved_labels, index=dataframe.index, dtype="object")
 
     packet_count = _numeric_series(pandas_module, dataframe, packet_count_column, 1.0)
     if backward_packet_count_column is not None:
@@ -340,6 +819,10 @@ def build_runtime_training_frame(pandas_module, dataframe, args):
         duration_series = duration_series
 
     protocol_series = _text_series(pandas_module, dataframe, protocol_column, "")
+    normalized_protocol_series = _normalized_protocol_series(
+        pandas_module,
+        protocol_series,
+    )
     tcp_indicator = _protocol_indicator(pandas_module, protocol_series, 6, "tcp")
     udp_indicator = _protocol_indicator(pandas_module, protocol_series, 17, "udp")
     icmp_indicator = _protocol_indicator(pandas_module, protocol_series, 1, "icmp")
@@ -354,6 +837,9 @@ def build_runtime_training_frame(pandas_module, dataframe, args):
         "dst_port": dst_port_column,
         "protocol": protocol_column,
         "group": group_column,
+        "scenario": scenario_column,
+        "scenario_family": scenario_family_column,
+        "scenario_id": scenario_id_column,
         "packet_count": packet_count_column,
         "byte_count": byte_count_column,
         "flow_duration": flow_duration_column,
@@ -375,6 +861,7 @@ def build_runtime_training_frame(pandas_module, dataframe, args):
                 "dst_ip": _text_series(pandas_module, dataframe, dst_ip_column, ""),
                 "dst_port": _numeric_series(pandas_module, dataframe, dst_port_column, -1).astype("int64"),
                 "timestamp": timestamp_series,
+                "protocol_name": normalized_protocol_series,
                 "label": labels,
                 "packet_count": packet_count,
                 "byte_count": byte_count,
@@ -392,9 +879,6 @@ def build_runtime_training_frame(pandas_module, dataframe, args):
 
     groups = None
     if grouped_by_window and grouped_frame is not None and not grouped_frame.empty:
-        malicious_mask = (grouped_frame["label"] == "malicious").astype("int64")
-        grouped_frame["malicious_mask"] = malicious_mask
-
         groupby_keys = ["src_ip", "window_start"]
         if group_column:
             groupby_keys.insert(0, "group_id")
@@ -438,7 +922,7 @@ def build_runtime_training_frame(pandas_module, dataframe, args):
             udp_packets=("udp_indicator", "sum"),
             tcp_packets=("tcp_indicator", "sum"),
             failed_connections=("rst_counts", "sum"),
-            malicious_mask=("malicious_mask", "max"),
+            label=("label", lambda series: _aggregate_group_label(series.tolist(), args.label_mode)),
         )
         aggregated = aggregated.merge(
             unanswered_counts,
@@ -474,7 +958,39 @@ def build_runtime_training_frame(pandas_module, dataframe, args):
                 ).clip(upper=1.0),
             }
         )
-        labels = aggregated["malicious_mask"].map({1: "malicious", 0: "benign"})
+        aggregated_for_extensions = aggregated.copy()
+        aggregated_for_extensions["packet_rate"] = feature_frame["packet_rate"].astype("float64")
+        aggregated_for_extensions["unique_destination_ips"] = feature_frame[
+            "unique_destination_ips"
+        ].astype("float64")
+        aggregated_for_extensions["unique_destination_ports"] = feature_frame[
+            "unique_destination_ports"
+        ].astype("float64")
+        aggregated_for_extensions["unanswered_syn_ratio"] = feature_frame[
+            "unanswered_syn_ratio"
+        ].astype("float64")
+        extended_feature_frame = build_extended_runtime_feature_frame(
+            pandas_module,
+            grouped_frame,
+            aggregated_for_extensions,
+            groupby_keys,
+            observation_window,
+        )
+        if not extended_feature_frame.empty:
+            extension_only_frame = (
+                extended_feature_frame.set_index(groupby_keys)
+                .loc[
+                    aggregated[groupby_keys]
+                    .set_index(groupby_keys)
+                    .index
+                ]
+                .reset_index(drop=True)
+            )
+            feature_frame = pandas_module.concat(
+                [feature_frame.reset_index(drop=True), extension_only_frame],
+                axis=1,
+            )
+        labels = aggregated["label"].astype(str)
         if group_column:
             groups = aggregated["group_id"].astype(str)
     else:
@@ -519,8 +1035,11 @@ def build_runtime_training_frame(pandas_module, dataframe, args):
         "live_compatible_schema": schema.live_compatible,
         "missing_live_columns": list(schema.missing_live_columns),
         "dataset_profile": args.dataset_profile,
+        "label_mode": args.label_mode,
+        "positive_labels": list(positive_labels),
         "window_seconds": args.window_seconds,
         "runtime_feature_names": list(RUNTIME_FEATURE_NAMES),
+        "extended_runtime_feature_names": list(EXTENDED_RUNTIME_FEATURE_NAMES),
     }
     return feature_frame, labels, groups, metadata
 
@@ -574,7 +1093,7 @@ def split_training_frame(
     )
     group_frame = (
         group_frame.groupby("group", as_index=False)
-        .agg(label=("label", lambda series: "malicious" if "malicious" in set(series) else series.iloc[0]))
+        .agg(label=("label", lambda series: _aggregate_group_label(series.tolist(), args.label_mode)))
     )
     group_count = int(len(group_frame))
     if group_count < 2 or group_frame["label"].nunique() < 2:
@@ -658,7 +1177,18 @@ def parse_args():
     parser.add_argument("--protocol-column", default=None, help="Optional explicit protocol column.")
     parser.add_argument("--run-id-column", default=None, help="Optional explicit run identifier column.")
     parser.add_argument("--scenario-column", default=None, help="Optional explicit scenario column.")
-    parser.add_argument("--scenario-id-column", default=None, help="Optional explicit scenario family column.")
+    parser.add_argument(
+        "--scenario-family-column",
+        default=None,
+        help="Optional explicit scenario-family column.",
+    )
+    parser.add_argument("--scenario-id-column", default=None, help="Optional explicit scenario ID column.")
+    parser.add_argument(
+        "--label-mode",
+        default="binary",
+        choices=("binary", "family", "scenario"),
+        help="Training label mode. Binary preserves current benign/malicious behavior.",
+    )
     parser.add_argument(
         "--dataset-profile",
         default="cicids2018",
@@ -757,7 +1287,7 @@ def main():
     try:
         import pandas as pd
         from sklearn.ensemble import RandomForestClassifier
-        from sklearn.metrics import classification_report
+        from sklearn.metrics import classification_report, confusion_matrix
         from sklearn.model_selection import train_test_split
     except ImportError as exc:
         print(
@@ -846,19 +1376,37 @@ def main():
     classifier.fit(features_train, labels_train)
 
     predictions = classifier.predict(features_test)
+    class_names = [str(value) for value in getattr(classifier, "classes_", [])]
     report = classification_report(
         labels_test,
         predictions,
         output_dict=True,
         zero_division=0,
     )
+    per_class_metrics = dict(
+        (class_name, report.get(class_name, {}))
+        for class_name in class_names
+    )
+    confusion = confusion_matrix(
+        labels_test,
+        predictions,
+        labels=class_names,
+    ).tolist()
 
     runtime_model = export_random_forest_model(classifier)
+    positive_labels = list(metadata.get("positive_labels") or ["malicious"])
+    train_class_distribution = labels_train.value_counts().to_dict()
+    test_class_distribution = labels_test.value_counts().to_dict()
+    feature_importance_summary = summarize_feature_importances(
+        RUNTIME_FEATURE_NAMES,
+        getattr(classifier, "feature_importances_", ()),
+        top_k=6,
+    )
 
     bundle = {
         "model": runtime_model,
         "feature_names": list(RUNTIME_FEATURE_NAMES),
-        "positive_labels": ["malicious"],
+        "positive_labels": positive_labels,
         "metadata": {
             "model_name": "random_forest",
             "model_version": "1",
@@ -874,10 +1422,32 @@ def main():
             "tree_count": int(len(runtime_model.trees)),
             "split_mode": split_metadata.get("split_mode"),
             "group_count": split_metadata.get("group_count"),
+            "label_mode": args.label_mode,
             "class_balance": normalized_class_balance,
+            "train_class_distribution": train_class_distribution,
+            "test_class_distribution": test_class_distribution,
+            "classes": class_names,
+            "per_class_metrics": per_class_metrics,
+            "confusion_matrix_labels": class_names,
+            "confusion_matrix": confusion,
+            "positive_labels": positive_labels,
             "class_weight": parse_class_weight(args.class_weight),
             "min_samples_split": args.min_samples_split,
             "min_samples_leaf": args.min_samples_leaf,
+            "feature_importance_summary": feature_importance_summary,
+            "explainability": {
+                "explanation_version": "1",
+                "feature_importance_available": feature_importance_summary[
+                    "feature_importance_available"
+                ],
+                "feature_importance_source": feature_importance_summary[
+                    "feature_importance_source"
+                ],
+                "top_global_features": feature_importance_summary["top_global_features"],
+                "global_feature_importance": feature_importance_summary[
+                    "global_feature_importance"
+                ],
+            },
             "report": report,
             "schema_notes": metadata,
         },
@@ -891,6 +1461,11 @@ def main():
         "combined_rows": int(len(dataframe)),
         "runtime_training_rows": int(len(feature_frame)),
         "class_balance": normalized_class_balance,
+        "train_class_distribution": train_class_distribution,
+        "test_class_distribution": test_class_distribution,
+        "label_mode": args.label_mode,
+        "classes": class_names,
+        "positive_labels": positive_labels,
         "features_used": list(RUNTIME_FEATURE_NAMES),
         "split_mode": split_metadata.get("split_mode"),
         "group_count": split_metadata.get("group_count"),
@@ -902,7 +1477,11 @@ def main():
         "min_samples_split": args.min_samples_split,
         "min_samples_leaf": args.min_samples_leaf,
         "class_weight": parse_class_weight(args.class_weight),
+        "feature_importance_summary": feature_importance_summary,
         "report": report,
+        "per_class_metrics": per_class_metrics,
+        "confusion_matrix_labels": class_names,
+        "confusion_matrix": confusion,
         "schema_notes": metadata,
     }
     if args.metrics_out:
@@ -913,8 +1492,10 @@ def main():
     feature_manifest = {
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "dataset_paths": [str(path) for path in dataset_paths],
+        "label_mode": args.label_mode,
         "runtime_feature_names": list(RUNTIME_FEATURE_NAMES),
         "runtime_feature_count": len(RUNTIME_FEATURE_NAMES),
+        "feature_importance_summary": feature_importance_summary,
         "schema_notes": metadata,
     }
     if args.feature_manifest_out:
@@ -931,6 +1512,7 @@ def main():
     for path in dataset_paths:
         print("- %s (%s rows)" % (path, input_row_counts.get(str(path), 0)))
     print("Class balance: %s" % json.dumps(normalized_class_balance, sort_keys=True))
+    print("Label mode: %s" % args.label_mode)
     print("Features used: %s" % ", ".join(RUNTIME_FEATURE_NAMES))
     print("Training rows: %s" % len(features_train))
     print("Test rows: %s" % len(features_test))

@@ -26,8 +26,8 @@
 
 <section class="mode-banner">
   <span class="mode-banner__label">IDS mode</span>
-  <strong class="mode-banner__value" id="overview-ids-mode">Threshold IDS</strong>
-  <span class="mode-banner__meta" id="overview-ids-mode-detail">Threshold only.</span>
+  <strong class="mode-banner__value" id="overview-ids-mode">Loading...</strong>
+  <span class="mode-banner__meta" id="overview-ids-mode-detail">Loading runtime IDS state...</span>
 </section>
 
 <section class="panel-grid panel-grid--wide">
@@ -53,6 +53,42 @@
       <canvas id="chart-overview-alerts"></canvas>
     </div>
   </article>
+</section>
+
+<section class="panel">
+  <div class="panel__header">
+    <div>
+      <h2>Operational Reports</h2>
+      <p>Download evidence-ready reports for supervisor demos and IDS performance review.</p>
+    </div>
+  </div>
+  <div class="report-grid">
+    <article class="report-card">
+      <h3>Hybrid IDS Summary</h3>
+      <p>Effective mode, detector totals, mitigation state, and efficiency signals.</p>
+      <a class="report-link" href="{{ base_path }}/api/reports/hybrid-summary?download=1">Download JSON</a>
+    </article>
+    <article class="report-card">
+      <h3>Detector Comparison</h3>
+      <p>Threshold vs ML vs hybrid counts for alerts, blocks, and correlated decisions.</p>
+      <a class="report-link" href="{{ base_path }}/api/reports/detector-comparison?download=1">Download CSV</a>
+    </article>
+    <article class="report-card">
+      <h3>Blocking Activity</h3>
+      <p>Current quarantine inventory with source, detector, reason, and evidence links.</p>
+      <a class="report-link" href="{{ base_path }}/api/reports/blocking-activity?download=1">Download CSV</a>
+    </article>
+    <article class="report-card">
+      <h3>Alert and Anomaly Summary</h3>
+      <p>Merged threshold alerts, ML alerts, and recent prediction/anomaly activity.</p>
+      <a class="report-link" href="{{ base_path }}/api/reports/alert-anomaly-summary?download=1">Download CSV</a>
+    </article>
+    <article class="report-card">
+      <h3>Performance Summary</h3>
+      <p>Packet, flow, and controller-rate metrics for runtime efficiency tracking.</p>
+      <a class="report-link" href="{{ base_path }}/api/reports/performance-summary?download=1">Download CSV</a>
+    </article>
+  </div>
 </section>
 
 <section class="panel-grid panel-grid--split">

@@ -6,8 +6,22 @@ import json
 from pathlib import Path
 import threading
 import time
+from collections import defaultdict
 
 from ml.feature_extractor import LiveFeatureExtractor
+
+
+def _coerce_bool(value):
+    if isinstance(value, bool):
+        return value
+    if value in (None, ""):
+        return False
+    normalized = str(value).strip().lower()
+    if normalized in ("1", "true", "yes", "on"):
+        return True
+    if normalized in ("0", "false", "no", "off"):
+        return False
+    return bool(value)
 
 
 @dataclass(frozen=True)
@@ -27,6 +41,10 @@ class DatasetLabel(object):
     rate_parameter: str = ""
     concurrency_level: str = ""
     capture_file: str = ""
+    expected_detection_target: str = ""
+    threshold_evasive: bool = False
+    known_family: bool = False
+    blended_with_benign: bool = False
     note: str = ""
     source: str = "manual"
 
@@ -42,6 +60,16 @@ class RuntimeDatasetRecorder(object):
         self.label_path = Path(
             getattr(ml_config, "dataset_label_path", "runtime/dataset_label.json")
         )
+        self.recording_mode = self._validated_recording_mode(
+            getattr(ml_config, "dataset_recording_mode", "packet")
+        )
+        self.snapshot_stride = max(
+            1,
+            int(getattr(ml_config, "dataset_snapshot_stride", 10) or 10),
+        )
+        self.record_debug_context = bool(
+            getattr(ml_config, "dataset_record_debug_context", False)
+        )
         self.label_refresh_seconds = max(
             0.2,
             float(getattr(ml_config, "dataset_label_refresh_seconds", 1.0)),
@@ -53,12 +81,16 @@ class RuntimeDatasetRecorder(object):
         self._lock = threading.Lock()
         self._last_label_check = 0.0
         self._cached_label = None
+        self._observation_counts = defaultdict(int)
 
     def status(self):
         return {
             "enabled": self.enabled,
             "output_path": str(self.output_path),
             "label_path": str(self.label_path),
+            "recording_mode": self.recording_mode,
+            "snapshot_stride": int(self.snapshot_stride),
+            "record_debug_context": self.record_debug_context,
             "record_unlabeled": self.record_unlabeled,
         }
 
@@ -82,13 +114,39 @@ class RuntimeDatasetRecorder(object):
         if feature_snapshot is None:
             return False
 
-        record = self._build_record(
-            packet_metadata,
-            feature_snapshot,
-            label,
-            threshold_context=threshold_context,
-        )
-        self._append_record(record)
+        src_ip = packet_metadata.src_ip
+        self._observation_counts[src_ip] += 1
+        observation_index = int(self._observation_counts[src_ip])
+        records = []
+
+        if self.recording_mode == "packet":
+            records.append(
+                self._build_record(
+                    packet_metadata,
+                    feature_snapshot,
+                    label,
+                    threshold_context=threshold_context,
+                    record_kind="packet",
+                    observation_index=observation_index,
+                )
+            )
+        elif self.recording_mode == "snapshot":
+            if (observation_index % self.snapshot_stride) == 0:
+                records.append(
+                    self._build_record(
+                        packet_metadata,
+                        feature_snapshot,
+                        label,
+                        threshold_context=threshold_context,
+                        record_kind="snapshot",
+                        observation_index=observation_index,
+                    )
+                )
+
+        if not records:
+            return False
+
+        self._append_records(records)
         return True
 
     def _current_label(self):
@@ -128,15 +186,50 @@ class RuntimeDatasetRecorder(object):
             rate_parameter=str(payload.get("rate_parameter", "")).strip(),
             concurrency_level=str(payload.get("concurrency_level", "")).strip(),
             capture_file=str(payload.get("capture_file", "")).strip(),
+            expected_detection_target=str(
+                payload.get("expected_detection_target", "")
+            ).strip(),
+            threshold_evasive=_coerce_bool(payload.get("threshold_evasive", False)),
+            known_family=_coerce_bool(payload.get("known_family", False)),
+            blended_with_benign=_coerce_bool(payload.get("blended_with_benign", False)),
             note=str(payload.get("note", "")).strip(),
             source=str(payload.get("source", "manual")).strip() or "manual",
         )
         return self._cached_label
 
-    def _build_record(self, packet_metadata, feature_snapshot, label, threshold_context=None):
+    def _build_record(
+        self,
+        packet_metadata,
+        feature_snapshot,
+        label,
+        threshold_context=None,
+        record_kind="packet",
+        observation_index=1,
+    ):
         feature_values = dict(feature_snapshot.feature_values)
         record_label = (label.label if label is not None else "unlabeled").strip() or "unlabeled"
         threshold_context = dict(threshold_context or {})
+        total_packets = self._record_total_packets(
+            packet_metadata,
+            feature_snapshot,
+            feature_values,
+            record_kind,
+        )
+        total_bytes = self._record_total_bytes(
+            packet_metadata,
+            feature_values,
+            record_kind,
+        )
+        syn_flag_count = self._record_syn_flag_count(
+            packet_metadata,
+            feature_values,
+            record_kind,
+        )
+        rst_flag_count = self._record_rst_flag_count(
+            packet_metadata,
+            feature_values,
+            record_kind,
+        )
 
         record = {
             "Timestamp": datetime.fromtimestamp(
@@ -147,10 +240,10 @@ class RuntimeDatasetRecorder(object):
             "Dst IP": packet_metadata.dst_ip or "",
             "Dst Port": int(packet_metadata.dst_port) if packet_metadata.dst_port is not None else -1,
             "Protocol": packet_metadata.transport_protocol,
-            "Total Packets": 1,
-            "Total Bytes": int(packet_metadata.packet_length),
-            "SYN Flag Count": 1 if getattr(packet_metadata, "tcp_syn_only", False) else 0,
-            "RST Flag Count": 1 if getattr(packet_metadata, "tcp_rst", False) else 0,
+            "Total Packets": total_packets,
+            "Total Bytes": total_bytes,
+            "SYN Flag Count": syn_flag_count,
+            "RST Flag Count": rst_flag_count,
             "Label": record_label,
             "Scenario": label.scenario if label is not None else "",
             "Scenario ID": label.scenario_id if label is not None else "",
@@ -166,10 +259,24 @@ class RuntimeDatasetRecorder(object):
             "Rate Parameter": label.rate_parameter if label is not None else "",
             "Concurrency Level": label.concurrency_level if label is not None else "",
             "Capture File": label.capture_file if label is not None else "",
+            "Expected Detection Target": (
+                label.expected_detection_target if label is not None else ""
+            ),
+            "Threshold Evasive": (
+                bool(label.threshold_evasive) if label is not None else False
+            ),
+            "Known Family": bool(label.known_family) if label is not None else False,
+            "Blended With Benign": (
+                bool(label.blended_with_benign) if label is not None else False
+            ),
             "Label Source": label.source if label is not None else "none",
             "Note": label.note if label is not None else "",
             "DPID": getattr(packet_metadata, "dpid", ""),
             "In Port": int(getattr(packet_metadata, "in_port", 0) or 0),
+            "Recording Mode": record_kind,
+            "Observation Index": int(observation_index),
+            "Snapshot Sample Count": int(feature_snapshot.sample_count),
+            "Snapshot Stride": int(self.snapshot_stride),
         }
 
         for feature_name, value in feature_values.items():
@@ -205,11 +312,81 @@ class RuntimeDatasetRecorder(object):
             record["Forwarding Visibility"] = str(
                 threshold_context.get("forwarding_visibility", "")
             )
+        if self.record_debug_context:
+            record.update(
+                self._debug_context_fields(
+                    packet_metadata.src_ip,
+                    feature_snapshot,
+                )
+            )
         return record
 
-    def _append_record(self, record):
+    def _append_records(self, records):
         self.output_path.parent.mkdir(parents=True, exist_ok=True)
         with self._lock:
             with self.output_path.open("a") as handle:
-                handle.write(json.dumps(record, sort_keys=True))
-                handle.write("\n")
+                for record in records:
+                    handle.write(json.dumps(record, sort_keys=True))
+                    handle.write("\n")
+
+    @staticmethod
+    def _validated_recording_mode(mode):
+        normalized = str(mode or "packet").strip().lower()
+        if normalized not in ("packet", "snapshot"):
+            return "packet"
+        return normalized
+
+    @staticmethod
+    def _snapshot_window_seconds(feature_values):
+        return max(
+            1.0,
+            float(feature_values.get("observation_window_seconds", 0.0) or 1.0),
+        )
+
+    def _record_total_packets(self, packet_metadata, feature_snapshot, feature_values, record_kind):
+        if record_kind == "packet":
+            return 1
+        return int(
+            round(
+                float(feature_values.get("packet_count", feature_snapshot.sample_count) or 0.0)
+            )
+        )
+
+    def _record_total_bytes(self, packet_metadata, feature_values, record_kind):
+        if record_kind == "packet":
+            return int(packet_metadata.packet_length)
+        return int(round(float(feature_values.get("byte_count", packet_metadata.packet_length) or 0.0)))
+
+    def _record_syn_flag_count(self, packet_metadata, feature_values, record_kind):
+        if record_kind == "packet":
+            return 1 if getattr(packet_metadata, "tcp_syn_only", False) else 0
+        window_seconds = self._snapshot_window_seconds(feature_values)
+        return int(round(float(feature_values.get("syn_rate", 0.0) or 0.0) * window_seconds))
+
+    def _record_rst_flag_count(self, packet_metadata, feature_values, record_kind):
+        if record_kind == "packet":
+            return 1 if getattr(packet_metadata, "tcp_rst", False) else 0
+        window_seconds = self._snapshot_window_seconds(feature_values)
+        return int(
+            round(
+                float(feature_values.get("failed_connection_rate", 0.0) or 0.0)
+                * window_seconds
+            )
+        )
+
+    def _debug_context_fields(self, src_ip, feature_snapshot):
+        return {
+            "Context Short Window Samples": int(feature_snapshot.sample_count),
+            "Context Long Window Samples": int(
+                len(self.feature_extractor.host_history_windows.get(src_ip, ()))
+            ),
+            "Context Pending Connection Attempts": int(
+                self.feature_extractor.pending_attempt_counts.get(src_ip, 0) or 0
+            ),
+            "Context Unanswered Window Samples": int(
+                len(self.feature_extractor.unanswered_windows.get(src_ip, ()))
+            ),
+            "Context Failed Window Samples": int(
+                len(self.feature_extractor.failed_windows.get(src_ip, ()))
+            ),
+        }

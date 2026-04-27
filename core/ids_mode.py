@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 import json
+import os
 from pathlib import Path
 from threading import Lock
 
@@ -69,6 +70,34 @@ def ids_mode_options():
         {"value": mode, "label": IDS_MODE_LABELS[mode]}
         for mode in PUBLIC_IDS_MODES
     ]
+
+
+def explicit_ids_mode_from_env(env=None):
+    """Return an explicitly configured startup mode, if one was provided."""
+
+    env = env or os.environ
+    for variable_name in ("SDN_IDS_MODE", "SDN_ML_MODE"):
+        value = env.get(variable_name)
+        if value is None or not str(value).strip():
+            continue
+        return normalize_ids_mode_public(value)
+    return None
+
+
+def resolve_startup_ids_mode(configured_mode, state_store=None, env=None):
+    """Choose the controller startup mode.
+
+    Explicit startup environment wins over persisted runtime state so normal
+    compose restarts can intentionally move the controller back to the repo's
+    configured operating mode.
+    """
+
+    explicit_mode = explicit_ids_mode_from_env(env=env)
+    if explicit_mode is not None:
+        return explicit_mode
+    if state_store is not None:
+        return state_store.current_mode(default=configured_mode)
+    return normalize_ids_mode_public(configured_mode)
 
 
 class IDSModeStateStore(object):

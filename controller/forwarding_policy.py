@@ -9,6 +9,12 @@ def classify_visibility(ids_config, packet_metadata):
     if not getattr(packet_metadata, "is_ipv4", False):
         return "fast_path"
 
+    if (
+        getattr(ids_config, "keep_tcp_syn_packets_visible", True)
+        and getattr(packet_metadata, "is_fragmented_tcp_probe", False)
+    ):
+        return "tcp_fragment_probe"
+
     if getattr(packet_metadata, "transport_protocol", None) == "tcp":
         if (
             getattr(ids_config, "keep_tcp_syn_packets_visible", True)

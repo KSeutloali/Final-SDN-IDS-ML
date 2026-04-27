@@ -15,6 +15,19 @@ if __package__ in (None, ""):
 from config.settings import load_config
 
 
+def _parse_boolish(value, default=False):
+    if value in (None, ""):
+        return bool(default)
+    if isinstance(value, bool):
+        return value
+    normalized = str(value).strip().lower()
+    if normalized in ("1", "true", "yes", "on"):
+        return True
+    if normalized in ("0", "false", "no", "off"):
+        return False
+    return bool(default)
+
+
 def parse_args():
     parser = argparse.ArgumentParser(description="Set the active runtime dataset label.")
     parser.add_argument("label", nargs="?", help="Label to apply, for example benign or malicious.")
@@ -64,6 +77,26 @@ def parse_args():
         default="",
         help="Optional capture artifact path associated with this scenario.",
     )
+    parser.add_argument(
+        "--expected-detection-target",
+        default="",
+        help="Optional intended detector target such as threshold, classifier, anomaly, or hybrid.",
+    )
+    parser.add_argument(
+        "--threshold-evasive",
+        default="false",
+        help="Whether the scenario is designed to stay below threshold rules.",
+    )
+    parser.add_argument(
+        "--known-family",
+        default="false",
+        help="Whether the scenario belongs to a family already known to the supervised classifier.",
+    )
+    parser.add_argument(
+        "--blended-with-benign",
+        default="false",
+        help="Whether the scenario intentionally mixes benign and suspicious behavior.",
+    )
     parser.add_argument("--note", default="", help="Optional note stored with recorded rows.")
     parser.add_argument(
         "--label-file",
@@ -106,6 +139,10 @@ def main():
         "rate_parameter": args.rate_parameter,
         "concurrency_level": args.concurrency_level,
         "capture_file": args.capture_file,
+        "expected_detection_target": args.expected_detection_target,
+        "threshold_evasive": _parse_boolish(args.threshold_evasive),
+        "known_family": _parse_boolish(args.known_family),
+        "blended_with_benign": _parse_boolish(args.blended_with_benign),
         "note": args.note,
         "source": "manual",
         "updated_at": datetime.now(timezone.utc).isoformat(),

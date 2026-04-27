@@ -54,17 +54,22 @@ class ConfigLoadingTests(unittest.TestCase):
             self.assertFalse(config.ml.enabled)
             self.assertEqual(config.ml.mode, "threshold_only")
             self.assertEqual(config.ml.mode_state_path, "runtime/ids_mode_state.json")
-            self.assertEqual(config.ml.hybrid_policy, "alert_only")
+            self.assertEqual(config.ml.hybrid_policy, "layered_consensus")
             self.assertEqual(
                 config.ml.model_path,
                 "models/random_forest_runtime_final.joblib",
             )
+            self.assertEqual(config.ml.anomaly_model_path, "")
+            self.assertEqual(config.ml.inference_mode, "classifier_only")
             self.assertEqual(
                 config.ml.dataset_path,
                 "datasets/cicids2018.parquet",
             )
             self.assertFalse(config.ml.dataset_recording_enabled)
             self.assertEqual(config.ml.dataset_recording_path, "runtime/ml_dataset.jsonl")
+            self.assertEqual(config.ml.dataset_recording_mode, "packet")
+            self.assertEqual(config.ml.dataset_snapshot_stride, 10)
+            self.assertFalse(config.ml.dataset_record_debug_context)
             self.assertEqual(config.ml.dataset_label_path, "runtime/dataset_label.json")
             self.assertFalse(config.ml.dataset_record_unlabeled)
             self.assertFalse(config.ml.dataset_disable_mitigation)
@@ -75,9 +80,20 @@ class ConfigLoadingTests(unittest.TestCase):
             self.assertAlmostEqual(config.ml.confidence_threshold, 0.65)
             self.assertAlmostEqual(config.ml.mitigation_threshold, 0.80)
             self.assertAlmostEqual(config.ml.alert_only_threshold, 0.55)
+            self.assertAlmostEqual(config.ml.anomaly_score_threshold, 0.60)
+            self.assertAlmostEqual(config.ml.hybrid_classifier_block_threshold, 0.80)
+            self.assertAlmostEqual(config.ml.hybrid_anomaly_support_threshold, 0.60)
+            self.assertEqual(config.ml.hybrid_block_repeat_count, 2)
+            self.assertEqual(config.ml.hybrid_threshold_near_miss_repeat_count, 2)
+            self.assertTrue(config.ml.hybrid_known_family_block_enabled)
+            self.assertEqual(config.ml.hybrid_block_eligible_families, ())
+            self.assertAlmostEqual(config.ml.hybrid_anomaly_trend_threshold, 0.05)
+            self.assertFalse(config.ml.hybrid_anomaly_only_block_enabled)
+            self.assertAlmostEqual(config.ml.hybrid_anomaly_only_block_threshold, 0.75)
             self.assertAlmostEqual(config.ml.unanswered_syn_timeout_seconds, 1.5)
             self.assertEqual(config.ml.hybrid_correlation_window_seconds, 10)
             self.assertEqual(config.ml.ml_only_escalation_count, 3)
+            self.assertEqual(config.ml.anomaly_only_escalation_count, 3)
             self.assertFalse(config.ml.ml_only_escalation_enabled)
             self.assertTrue(config.ml.capture_on_ml_only_alert)
             self.assertFalse(config.logging.log_allowed_traffic)
@@ -115,6 +131,7 @@ class ConfigLoadingTests(unittest.TestCase):
                 "SDN_IDS_UNANSWERED_SYN_TIMEOUT_SECONDS": "2.5",
                 "SDN_MITIGATION_ENABLED": "false",
                 "SDN_QUARANTINE_ENABLED": "false",
+                "SDN_AUTO_UNBLOCK_ENABLED": "true",
                 "SDN_MANUAL_UNBLOCK_ENABLED": "false",
                 "SDN_CAPTURE_ENABLED": "false",
                 "SDN_CAPTURE_CONTINUOUS_ENABLED": "false",
@@ -130,17 +147,33 @@ class ConfigLoadingTests(unittest.TestCase):
                 "SDN_ML_HYBRID_POLICY": "high_confidence_block",
                 "SDN_IDS_MODE_STATE_PATH": "runtime/custom-ids-mode.json",
                 "SDN_ML_MODEL_PATH": "models/demo.joblib",
+                "SDN_ML_ANOMALY_MODEL_PATH": "models/anomaly.joblib",
+                "SDN_ML_INFERENCE_MODE": "combined",
                 "SDN_ML_DATASET_PATH": "datasets/custom.parquet",
                 "SDN_ML_DATASET_RECORDING_ENABLED": "true",
                 "SDN_ML_DATASET_RECORDING_PATH": "runtime/custom.jsonl",
+                "SDN_ML_DATASET_RECORDING_MODE": "snapshot",
+                "SDN_ML_DATASET_SNAPSHOT_STRIDE": "12",
+                "SDN_ML_DATASET_RECORD_DEBUG_CONTEXT": "true",
                 "SDN_ML_DATASET_LABEL_PATH": "runtime/custom-label.json",
                 "SDN_ML_DATASET_RECORD_UNLABELED": "true",
                 "SDN_ML_DATASET_DISABLE_MITIGATION": "true",
                 "SDN_ML_UNANSWERED_SYN_TIMEOUT_SECONDS": "0.9",
                 "SDN_ML_CONFIDENCE_THRESHOLD": "0.66",
                 "SDN_ML_ALERT_ONLY_THRESHOLD": "0.58",
+                "SDN_ML_ANOMALY_SCORE_THRESHOLD": "0.72",
+                "SDN_ML_HYBRID_CLASSIFIER_BLOCK_THRESHOLD": "0.87",
+                "SDN_ML_HYBRID_ANOMALY_SUPPORT_THRESHOLD": "0.69",
+                "SDN_ML_HYBRID_BLOCK_REPEAT_COUNT": "4",
+                "SDN_ML_HYBRID_THRESHOLD_NEAR_MISS_REPEAT_COUNT": "5",
+                "SDN_ML_HYBRID_KNOWN_FAMILY_BLOCK_ENABLED": "false",
+                "SDN_ML_HYBRID_BLOCK_ELIGIBLE_FAMILIES": "tcp_scan,syn_flood",
+                "SDN_ML_HYBRID_ANOMALY_TREND_THRESHOLD": "0.11",
+                "SDN_ML_HYBRID_ANOMALY_ONLY_BLOCK_ENABLED": "true",
+                "SDN_ML_HYBRID_ANOMALY_ONLY_BLOCK_THRESHOLD": "0.93",
                 "SDN_ML_HYBRID_CORRELATION_WINDOW_SECONDS": "15",
                 "SDN_ML_ONLY_ESCALATION_COUNT": "4",
+                "SDN_ML_ANOMALY_ONLY_ESCALATION_COUNT": "5",
                 "SDN_ML_ONLY_ESCALATION_ENABLED": "true",
                 "SDN_ML_CAPTURE_ON_ML_ONLY_ALERT": "false",
                 "SDN_ML_POSITIVE_LABELS": "malicious,attack,scan",
@@ -181,6 +214,7 @@ class ConfigLoadingTests(unittest.TestCase):
             self.assertAlmostEqual(config.ids.unanswered_syn_timeout_seconds, 2.5)
             self.assertFalse(config.mitigation.enabled)
             self.assertFalse(config.mitigation.quarantine_enabled)
+            self.assertTrue(config.mitigation.auto_unblock_enabled)
             self.assertFalse(config.mitigation.manual_unblock_enabled)
             self.assertFalse(config.capture.enabled)
             self.assertFalse(config.capture.continuous_enabled)
@@ -196,17 +230,36 @@ class ConfigLoadingTests(unittest.TestCase):
             self.assertEqual(config.ml.mode_state_path, "runtime/custom-ids-mode.json")
             self.assertEqual(config.ml.hybrid_policy, "high_confidence_block")
             self.assertEqual(config.ml.model_path, "models/demo.joblib")
+            self.assertEqual(config.ml.anomaly_model_path, "models/anomaly.joblib")
+            self.assertEqual(config.ml.inference_mode, "combined")
             self.assertEqual(config.ml.dataset_path, "datasets/custom.parquet")
             self.assertTrue(config.ml.dataset_recording_enabled)
             self.assertEqual(config.ml.dataset_recording_path, "runtime/custom.jsonl")
+            self.assertEqual(config.ml.dataset_recording_mode, "snapshot")
+            self.assertEqual(config.ml.dataset_snapshot_stride, 12)
+            self.assertTrue(config.ml.dataset_record_debug_context)
             self.assertEqual(config.ml.dataset_label_path, "runtime/custom-label.json")
             self.assertTrue(config.ml.dataset_record_unlabeled)
             self.assertTrue(config.ml.dataset_disable_mitigation)
             self.assertAlmostEqual(config.ml.unanswered_syn_timeout_seconds, 0.9)
             self.assertAlmostEqual(config.ml.confidence_threshold, 0.66)
             self.assertAlmostEqual(config.ml.alert_only_threshold, 0.58)
+            self.assertAlmostEqual(config.ml.anomaly_score_threshold, 0.72)
+            self.assertAlmostEqual(config.ml.hybrid_classifier_block_threshold, 0.87)
+            self.assertAlmostEqual(config.ml.hybrid_anomaly_support_threshold, 0.69)
+            self.assertEqual(config.ml.hybrid_block_repeat_count, 4)
+            self.assertEqual(config.ml.hybrid_threshold_near_miss_repeat_count, 5)
+            self.assertFalse(config.ml.hybrid_known_family_block_enabled)
+            self.assertEqual(
+                config.ml.hybrid_block_eligible_families,
+                ("tcp_scan", "syn_flood"),
+            )
+            self.assertAlmostEqual(config.ml.hybrid_anomaly_trend_threshold, 0.11)
+            self.assertTrue(config.ml.hybrid_anomaly_only_block_enabled)
+            self.assertAlmostEqual(config.ml.hybrid_anomaly_only_block_threshold, 0.93)
             self.assertEqual(config.ml.hybrid_correlation_window_seconds, 15)
             self.assertEqual(config.ml.ml_only_escalation_count, 4)
+            self.assertEqual(config.ml.anomaly_only_escalation_count, 5)
             self.assertTrue(config.ml.ml_only_escalation_enabled)
             self.assertFalse(config.ml.capture_on_ml_only_alert)
             self.assertEqual(

@@ -26,11 +26,16 @@ from experiments.common import (
     run_on_host,
     start_capture_session,
     stop_capture_session,
+    warmup_scenario_connectivity,
     utc_slug,
     write_json,
 )
 from experiments.extract_results import (
     aggregate_results,
+    build_family_summary,
+    build_intent_summary,
+    build_mode_comparison,
+    build_scenario_comparison,
     extract_run_result,
     write_csv,
     write_json as write_result_json,
@@ -102,6 +107,11 @@ def parse_args():
         help="Runtime model path used for the ML-enhanced comparison mode.",
     )
     parser.add_argument(
+        "--anomaly-model-path",
+        default="",
+        help="Optional anomaly model path used by anomaly-only and combined hybrid comparison modes.",
+    )
+    parser.add_argument(
         "--no-restore-controller",
         action="store_true",
         help="Leave the controller in the last evaluation mode instead of restoring defaults.",
@@ -126,6 +136,10 @@ def _run_one_scenario(
     run_dir,
 ):
     recreate_controller(mode, timeout_seconds=args.controller_ready_timeout)
+    warmup_scenario_connectivity(
+        scenario,
+        timeout_seconds=max(5.0, min(args.controller_ready_timeout, 15.0)),
+    )
     before_payload = dashboard_state()
     start_epoch = time.time()
     start_iso = isoformat_utc(start_epoch)
@@ -191,7 +205,7 @@ def main():
     )
     root_dir.mkdir(parents=True, exist_ok=True)
 
-    modes = default_modes(args.ml_model_path)
+    modes = default_modes(args.ml_model_path, args.anomaly_model_path)
     scenarios = default_scenarios(
         flood_count=args.flood_count,
         hping_interval_usec=args.hping_interval_usec,
@@ -233,14 +247,28 @@ def main():
                     run_rows.append(result)
 
         summary_rows = aggregate_results(run_rows)
+        mode_comparison_rows = build_mode_comparison(run_rows)
+        family_summary_rows = build_family_summary(run_rows)
+        intent_summary_rows = build_intent_summary(run_rows)
+        scenario_comparison_rows = build_scenario_comparison(run_rows)
         write_result_json(root_dir / "per_run.json", run_rows)
         write_csv(root_dir / "per_run.csv", run_rows)
         write_result_json(root_dir / "summary.json", summary_rows)
         write_csv(root_dir / "summary.csv", summary_rows)
+        write_result_json(root_dir / "mode_comparison.json", mode_comparison_rows)
+        write_csv(root_dir / "mode_comparison.csv", mode_comparison_rows)
+        write_result_json(root_dir / "family_summary.json", family_summary_rows)
+        write_csv(root_dir / "family_summary.csv", family_summary_rows)
+        write_result_json(root_dir / "intent_summary.json", intent_summary_rows)
+        write_csv(root_dir / "intent_summary.csv", intent_summary_rows)
+        write_result_json(root_dir / "scenario_comparison.json", scenario_comparison_rows)
+        write_csv(root_dir / "scenario_comparison.csv", scenario_comparison_rows)
 
         print("Evaluation results written to %s" % root_dir)
         print("Per-run CSV: %s" % (root_dir / "per_run.csv"))
         print("Summary CSV: %s" % (root_dir / "summary.csv"))
+        print("Mode comparison CSV: %s" % (root_dir / "mode_comparison.csv"))
+        print("Scenario comparison CSV: %s" % (root_dir / "scenario_comparison.csv"))
     finally:
         if not args.no_restore_controller:
             compose(["up", "-d", "--force-recreate", "controller"], check=False)

@@ -1,9 +1,13 @@
 """Shared dashboard state snapshot writer, reader, and web adapter."""
 
 from collections import deque
+import csv
 from datetime import datetime, timezone
+import hashlib
+import io
 import json
 from pathlib import Path
+import shutil
 from threading import Lock
 import time
 
@@ -372,7 +376,9 @@ class DashboardDataAdapter(object):
     def __init__(self, app_config):
         self.app_config = app_config
         self.state_reader = DashboardStateReader(app_config.dashboard)
-        self.capture_root = Path("captures/output")
+        capture_config = getattr(app_config, "capture", None)
+        capture_root = getattr(capture_config, "output_directory", "captures/output")
+        self.capture_root = Path(capture_root)
         self.active_capture_file = self.capture_root / ".active_capture_session"
         self.continuous_capture_state_file = (
             self.capture_root / "continuous" / "continuous_capture_state.json"
@@ -412,6 +418,518 @@ class DashboardDataAdapter(object):
             return None
         return candidate
 
+    @staticmethod
+    def available_reports():
+        return [
+            {
+                "key": "hybrid-summary",
+                "title": "Hybrid IDS Summary",
+                "description": "Runtime mode, detector totals, and mitigation posture.",
+                "default_format": "json",
+                "formats": ["json"],
+            },
+            {
+                "key": "detector-comparison",
+                "title": "Threshold vs ML vs Hybrid Comparison",
+                "description": "Detection and block counters across detector strategies.",
+                "default_format": "csv",
+                "formats": ["csv"],
+            },
+            {
+                "key": "blocking-activity",
+                "title": "Blocking and Quarantine Activity",
+                "description": "Current quarantine inventory with detector attribution.",
+                "default_format": "csv",
+                "formats": ["csv"],
+            },
+            {
+                "key": "alert-anomaly-summary",
+                "title": "Alert and Anomaly Summary",
+                "description": "Combined threshold, ML alert, and prediction evidence.",
+                "default_format": "csv",
+                "formats": ["csv"],
+            },
+            {
+                "key": "performance-summary",
+                "title": "Performance and Throughput Summary",
+                "description": "Controller rates, flow totals, and recent runtime throughput.",
+                "default_format": "csv",
+                "formats": ["csv"],
+            },
+        ]
+
+    def delete_selected_captures(self, snapshot_names=None, file_paths=None):
+        snapshots_root = (self.capture_root / "snapshots").resolve()
+        snapshot_names = list(snapshot_names or [])
+        file_paths = list(file_paths or [])
+        result = {
+            "deleted_snapshot_count": 0,
+            "deleted_file_count": 0,
+            "deleted_snapshots": [],
+            "deleted_files": [],
+            "failed": [],
+        }
+        deleted_absolute_paths = set()
+
+        for snapshot_name in snapshot_names:
+            normalized_name = str(snapshot_name or "").strip()
+            if not normalized_name:
+                result["failed"].append(
+                    {
+                        "target": snapshot_name,
+                        "reason": "missing_snapshot_name",
+                    }
+                )
+                continue
+            if Path(normalized_name).name != normalized_name:
+                result["failed"].append(
+                    {
+                        "target": normalized_name,
+                        "reason": "invalid_snapshot_name",
+                    }
+                )
+                continue
+
+            snapshot_path = (snapshots_root / normalized_name).resolve()
+            if not str(snapshot_path).startswith(str(snapshots_root)):
+                result["failed"].append(
+                    {
+                        "target": normalized_name,
+                        "reason": "outside_capture_root",
+                    }
+                )
+                continue
+            if not snapshot_path.exists() or not snapshot_path.is_dir():
+                result["failed"].append(
+                    {
+                        "target": normalized_name,
+                        "reason": "snapshot_not_found",
+                    }
+                )
+                continue
+
+            pcap_files = [path for path in snapshot_path.rglob("*.pcap") if path.is_file()]
+            deleted_absolute_paths.update(str(path.resolve()) for path in pcap_files)
+            try:
+                shutil.rmtree(snapshot_path)
+            except OSError:
+                result["failed"].append(
+                    {
+                        "target": normalized_name,
+                        "reason": "delete_failed",
+                    }
+                )
+                continue
+
+            result["deleted_snapshot_count"] += 1
+            result["deleted_file_count"] += len(pcap_files)
+            result["deleted_snapshots"].append(normalized_name)
+
+        for relative_path in file_paths:
+            normalized_path = str(relative_path or "").strip()
+            if not normalized_path:
+                result["failed"].append(
+                    {
+                        "target": relative_path,
+                        "reason": "missing_relative_path",
+                    }
+                )
+                continue
+
+            resolved_path = self.resolve_capture_path(normalized_path)
+            if resolved_path is None:
+                result["failed"].append(
+                    {
+                        "target": normalized_path,
+                        "reason": "file_not_found",
+                    }
+                )
+                continue
+            if str(resolved_path.resolve()) in deleted_absolute_paths:
+                continue
+
+            try:
+                resolved_path.unlink()
+            except OSError:
+                result["failed"].append(
+                    {
+                        "target": normalized_path,
+                        "reason": "delete_failed",
+                    }
+                )
+                continue
+
+            result["deleted_file_count"] += 1
+            result["deleted_files"].append(normalized_path)
+            self._prune_capture_directory(resolved_path.parent)
+
+        return result
+
+    def delete_all_captures(self):
+        result = {
+            "deleted_snapshot_count": 0,
+            "deleted_file_count": 0,
+            "failed": [],
+        }
+
+        snapshots_root = self.capture_root / "snapshots"
+        if snapshots_root.exists():
+            for snapshot_path in snapshots_root.iterdir():
+                if not snapshot_path.is_dir():
+                    continue
+                pcap_files = [path for path in snapshot_path.rglob("*.pcap") if path.is_file()]
+                try:
+                    shutil.rmtree(snapshot_path)
+                except OSError:
+                    result["failed"].append(
+                        {
+                            "target": str(snapshot_path),
+                            "reason": "delete_failed",
+                        }
+                    )
+                    continue
+                result["deleted_snapshot_count"] += 1
+                result["deleted_file_count"] += len(pcap_files)
+
+        if self.capture_root.exists():
+            excluded_directories = {"continuous", "snapshots"}
+            for session_path in self.capture_root.iterdir():
+                if not session_path.is_dir() or session_path.name in excluded_directories:
+                    continue
+                pcap_files = [path for path in session_path.rglob("*.pcap") if path.is_file()]
+                try:
+                    shutil.rmtree(session_path)
+                except OSError:
+                    result["failed"].append(
+                        {
+                            "target": str(session_path),
+                            "reason": "delete_failed",
+                        }
+                    )
+                    continue
+                result["deleted_file_count"] += len(pcap_files)
+
+        for capture_file in self.capture_root.glob("continuous/ring/*/*.pcap"):
+            if not capture_file.is_file():
+                continue
+            try:
+                capture_file.unlink()
+            except OSError:
+                result["failed"].append(
+                    {
+                        "target": str(capture_file),
+                        "reason": "delete_failed",
+                    }
+                )
+                continue
+            result["deleted_file_count"] += 1
+
+        for interface_directory in self.capture_root.glob("continuous/ring/*"):
+            if interface_directory.is_dir():
+                self._prune_capture_directory(interface_directory)
+
+        return result
+
+    def build_report(self, report_key, requested_format=None):
+        report_name = str(report_key or "").strip().lower()
+        supported = {
+            row["key"]: row
+            for row in self.available_reports()
+        }
+        if report_name not in supported:
+            raise KeyError(report_name)
+
+        descriptor = supported[report_name]
+        output_format = str(requested_format or descriptor["default_format"]).strip().lower()
+        if output_format not in descriptor["formats"]:
+            raise ValueError(output_format)
+
+        payload = self.read()
+        if report_name == "hybrid-summary":
+            report_payload = self._build_hybrid_summary_report(payload)
+            content = json.dumps(report_payload, sort_keys=True, indent=2)
+            mime_type = "application/json; charset=utf-8"
+            extension = "json"
+        elif report_name == "detector-comparison":
+            content = self._csv_from_rows(
+                [
+                    {
+                        "metric": "Alerts Total",
+                        "threshold": payload.get("summary", {}).get("threshold_alerts_total", 0),
+                        "ml": payload.get("summary", {}).get("ml_alerts_total", 0),
+                        "hybrid_or_combined": payload.get("summary", {}).get("alerts_total", 0),
+                    },
+                    {
+                        "metric": "Blocks Total",
+                        "threshold": payload.get("summary", {}).get("threshold_blocks_total", 0),
+                        "ml": payload.get("summary", {}).get("ml_blocks_total", 0),
+                        "hybrid_or_combined": payload.get("summary", {}).get("blocks_total", 0),
+                    },
+                    {
+                        "metric": "Active Blocks",
+                        "threshold": payload.get("summary", {}).get("active_threshold_blocks", 0),
+                        "ml": payload.get("summary", {}).get("active_ml_blocks", 0),
+                        "hybrid_or_combined": payload.get("summary", {}).get("active_blocks", 0),
+                    },
+                    {
+                        "metric": "Hybrid Agreements",
+                        "threshold": 0,
+                        "ml": 0,
+                        "hybrid_or_combined": payload.get("summary", {}).get("hybrid_agreements_total", 0),
+                    },
+                    {
+                        "metric": "Hybrid Disagreements",
+                        "threshold": 0,
+                        "ml": 0,
+                        "hybrid_or_combined": payload.get("summary", {}).get("hybrid_disagreements_total", 0),
+                    },
+                    {
+                        "metric": "Threshold-Only Detections",
+                        "threshold": payload.get("summary", {}).get("threshold_only_detections_total", 0),
+                        "ml": 0,
+                        "hybrid_or_combined": payload.get("summary", {}).get("threshold_only_detections_total", 0),
+                    },
+                    {
+                        "metric": "ML-Only Detections",
+                        "threshold": 0,
+                        "ml": payload.get("summary", {}).get("ml_only_detections_total", 0),
+                        "hybrid_or_combined": payload.get("summary", {}).get("ml_only_detections_total", 0),
+                    },
+                ]
+            )
+            mime_type = "text/csv; charset=utf-8"
+            extension = "csv"
+        elif report_name == "blocking-activity":
+            rows = []
+            for row in payload.get("blocked_hosts", []):
+                rows.append(
+                    {
+                        "source_ip": row.get("src_ip") or "-",
+                        "detector": row.get("detector") or "-",
+                        "alert_type": row.get("alert_type") or "-",
+                        "reason": row.get("reason") or "-",
+                        "blocked_at": row.get("created_at") or "-",
+                        "status": row.get("status") or "-",
+                        "evidence_file": (
+                            (row.get("related_capture") or {}).get("primary_file")
+                            or "-"
+                        ),
+                    }
+                )
+            content = self._csv_from_rows(rows)
+            mime_type = "text/csv; charset=utf-8"
+            extension = "csv"
+        elif report_name == "alert-anomaly-summary":
+            rows = []
+            for row in payload.get("alerts", {}).get("rows", []):
+                rows.append(
+                    {
+                        "timestamp": row.get("timestamp") or "-",
+                        "record_type": "alert",
+                        "detector": row.get("detector") or "-",
+                        "source_ip": row.get("src_ip") or "-",
+                        "event": row.get("alert_type") or "-",
+                        "severity_or_label": row.get("severity") or "-",
+                        "confidence": row.get("confidence") if row.get("confidence") is not None else "",
+                        "suspicion_score": row.get("suspicion_score") if row.get("suspicion_score") is not None else "",
+                        "status": row.get("status") or "-",
+                        "reason": row.get("reason") or "-",
+                    }
+                )
+            for row in payload.get("recent_ml_predictions", []):
+                rows.append(
+                    {
+                        "timestamp": row.get("timestamp") or "-",
+                        "record_type": "prediction",
+                        "detector": "ml",
+                        "source_ip": row.get("src_ip") or "-",
+                        "event": row.get("predicted_family") or row.get("label") or "-",
+                        "severity_or_label": "malicious" if row.get("is_malicious") else "benign",
+                        "confidence": row.get("confidence") if row.get("confidence") is not None else "",
+                        "suspicion_score": row.get("suspicion_score") if row.get("suspicion_score") is not None else "",
+                        "status": "anomalous" if row.get("is_anomalous") else "normal",
+                        "reason": row.get("reason") or row.get("explanation_summary") or "-",
+                    }
+                )
+            content = self._csv_from_rows(rows)
+            mime_type = "text/csv; charset=utf-8"
+            extension = "csv"
+        else:
+            performance = payload.get("performance") or {}
+            summary = payload.get("summary") or {}
+            content = self._csv_from_rows(
+                [
+                    {
+                        "metric": "Packet Rate",
+                        "value": performance.get("packet_in_rate_display") or "0 pkt/s",
+                    },
+                    {
+                        "metric": "Flow Install Rate",
+                        "value": performance.get("flow_install_rate_display") or "0 flow/s",
+                    },
+                    {
+                        "metric": "Event Processing Rate",
+                        "value": performance.get("event_processing_rate_display") or "0 evt/s",
+                    },
+                    {
+                        "metric": "Flow Installs Total",
+                        "value": summary.get("flow_installs_total", 0),
+                    },
+                    {
+                        "metric": "Flow Removals Total",
+                        "value": summary.get("flow_removals_total", 0),
+                    },
+                    {
+                        "metric": "Active Flows",
+                        "value": summary.get("active_flows_total", 0),
+                    },
+                    {
+                        "metric": "Active Security Flows",
+                        "value": summary.get("active_security_flows_total", 0),
+                    },
+                    {
+                        "metric": "Controller Events Total",
+                        "value": summary.get("controller_events_total", 0),
+                    },
+                    {
+                        "metric": "Total Packets",
+                        "value": summary.get("total_packets", 0),
+                    },
+                ]
+            )
+            mime_type = "text/csv; charset=utf-8"
+            extension = "csv"
+
+        filename = "%s_%s.%s" % (
+            report_name.replace("-", "_"),
+            self._safe_report_timestamp(payload.get("generated_at")),
+            extension,
+        )
+        return {
+            "content": content.encode("utf-8"),
+            "filename": filename,
+            "mime_type": mime_type,
+            "format": output_format,
+            "report_key": report_name,
+        }
+
+    def _build_hybrid_summary_report(self, payload):
+        summary = payload.get("summary") or {}
+        ml = payload.get("ml") or {}
+        performance = payload.get("performance") or {}
+        return {
+            "generated_at": payload.get("generated_at"),
+            "ids_runtime": {
+                "configured_mode": ml.get("configured_mode_label")
+                or ids_mode_label(ml.get("configured_mode")),
+                "selected_mode": ml.get("selected_mode_label")
+                or ids_mode_label(ml.get("selected_mode")),
+                "effective_mode": ml.get("effective_mode_label")
+                or ids_mode_label(ml.get("effective_mode")),
+                "hybrid_policy": ml.get("hybrid_policy") or "-",
+                "model_available": bool(ml.get("model_available")),
+                "model_path": ml.get("model_path") or "-",
+            },
+            "detector_totals": {
+                "alerts_total": summary.get("alerts_total", 0),
+                "threshold_alerts_total": summary.get("threshold_alerts_total", 0),
+                "ml_alerts_total": summary.get("ml_alerts_total", 0),
+                "hybrid_agreements_total": summary.get("hybrid_agreements_total", 0),
+                "hybrid_disagreements_total": summary.get("hybrid_disagreements_total", 0),
+                "threshold_only_detections_total": summary.get("threshold_only_detections_total", 0),
+                "ml_only_detections_total": summary.get("ml_only_detections_total", 0),
+            },
+            "mitigation": {
+                "active_blocks": summary.get("active_blocks", 0),
+                "active_threshold_blocks": summary.get("active_threshold_blocks", 0),
+                "active_ml_blocks": summary.get("active_ml_blocks", 0),
+                "blocks_total": summary.get("blocks_total", 0),
+                "threshold_blocks_total": summary.get("threshold_blocks_total", 0),
+                "ml_blocks_total": summary.get("ml_blocks_total", 0),
+                "manual_unblocks_total": summary.get("manual_unblocks_total", 0),
+            },
+            "efficiency_signals": {
+                "ml_predictions_total": summary.get("ml_predictions_total", 0),
+                "ml_malicious_predictions_total": summary.get("ml_malicious_predictions_total", 0),
+                "ml_benign_predictions_total": summary.get("ml_benign_predictions_total", 0),
+                "hybrid_correlated_total": summary.get("hybrid_correlated_total", 0),
+                "hybrid_agreement_rate_percent": round(
+                    float(ml.get("agreement_rate", 0.0) or 0.0) * 100.0,
+                    2,
+                ),
+            },
+            "performance": {
+                "packet_in_rate_display": performance.get("packet_in_rate_display") or "0 pkt/s",
+                "flow_install_rate_display": performance.get("flow_install_rate_display")
+                or "0 flow/s",
+                "event_processing_rate_display": performance.get("event_processing_rate_display")
+                or "0 evt/s",
+                "active_flows_total": summary.get("active_flows_total", 0),
+                "active_security_flows_total": summary.get("active_security_flows_total", 0),
+            },
+        }
+
+    @staticmethod
+    def _csv_from_rows(rows):
+        normalized_rows = list(rows or [])
+        if not normalized_rows:
+            normalized_rows = [{"message": "No records"}]
+
+        fieldnames = []
+        for row in normalized_rows:
+            for key in row.keys():
+                if key not in fieldnames:
+                    fieldnames.append(key)
+
+        buffer = io.StringIO()
+        writer = csv.DictWriter(buffer, fieldnames=fieldnames, extrasaction="ignore")
+        writer.writeheader()
+        for row in normalized_rows:
+            writer.writerow({key: row.get(key, "") for key in fieldnames})
+        return buffer.getvalue()
+
+    @staticmethod
+    def _safe_report_timestamp(timestamp_value):
+        if timestamp_value:
+            text_value = str(timestamp_value).strip()
+            if text_value:
+                if text_value.endswith("Z"):
+                    text_value = text_value[:-1] + "+00:00"
+                try:
+                    parsed = datetime.fromisoformat(text_value)
+                    return parsed.strftime("%Y%m%d_%H%M%S")
+                except ValueError:
+                    pass
+        return datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+
+    def _prune_capture_directory(self, start_path):
+        if not self.capture_root.exists():
+            return
+
+        root_path = self.capture_root.resolve()
+        protected_paths = {
+            root_path,
+            (root_path / "continuous").resolve(),
+            (root_path / "continuous" / "ring").resolve(),
+            (root_path / "snapshots").resolve(),
+        }
+
+        current = Path(start_path).resolve()
+        while str(current).startswith(str(root_path)):
+            if current in protected_paths:
+                break
+            try:
+                has_children = any(current.iterdir())
+            except OSError:
+                break
+            if has_children:
+                break
+            try:
+                current.rmdir()
+            except OSError:
+                break
+            current = current.parent
+
     def _enrich_payload(self, payload):
         state = empty_dashboard_state()
         state.update(payload or {})
@@ -423,6 +941,7 @@ class DashboardDataAdapter(object):
         state["summary"] = summary
 
         recent_events = list(state.get("recent_events") or [])
+        recent_security_events = list(state.get("recent_security_events") or [])
         recent_ml_predictions = list(state.get("recent_ml_predictions") or [])
         recent_hybrid_events = list(state.get("recent_hybrid_events") or [])
         timeseries = list(state.get("timeseries") or [])
@@ -466,7 +985,8 @@ class DashboardDataAdapter(object):
         )
 
         protocol_rows = self._protocol_rows(summary.get("packets_by_protocol") or {})
-        alert_rows = self._alert_rows(recent_events)
+        alert_source_events = recent_security_events or recent_events
+        alert_rows = self._alert_rows(alert_source_events)
         ml_alert_rows = [row for row in alert_rows if row.get("detector") == "ml"]
         hybrid_rows = [row for row in alert_rows if row.get("detector") == "hybrid"]
         controller_activity = self._controller_activity_rows(recent_events)
@@ -491,7 +1011,7 @@ class DashboardDataAdapter(object):
         state["blocked_hosts"] = blocked_hosts
         state["traffic"] = traffic
         state["alerts"] = {
-            "rows": alert_rows[:40],
+            "rows": alert_rows[:60],
             "counts_by_severity": self._counts_by_key(alert_rows, "severity"),
             "counts_by_detector": self._counts_by_key(alert_rows, "detector"),
             "active_count": len(blocked_hosts),
@@ -612,7 +1132,7 @@ class DashboardDataAdapter(object):
             "configured_mode": ml_payload.get("configured_mode_label", "Threshold IDS"),
             "selected_mode": ml_payload.get("selected_mode_label", "Threshold IDS"),
             "effective_mode": ml_payload.get("effective_mode_label", "Threshold IDS"),
-            "hybrid_policy": ml_payload.get("hybrid_policy", "alert_only"),
+            "hybrid_policy": ml_payload.get("hybrid_policy", "layered_consensus"),
             "model_available": ml_payload.get("model_available", False),
             "model_path": ml_payload.get("model_path", ""),
         }
@@ -713,6 +1233,8 @@ class DashboardDataAdapter(object):
                     snapshots.append(
                         {
                             "snapshot_name": metadata.get("snapshot_name") or snapshot_dir.name,
+                            "snapshot_key": snapshot_dir.name,
+                            "snapshot_directory": str(snapshot_dir.relative_to(self.capture_root)),
                             "timestamp": metadata.get("created_at") or "-",
                             "source_ip": metadata.get("source_ip") or "-",
                             "alert_type": metadata.get("alert_type") or "-",
@@ -799,23 +1321,43 @@ class DashboardDataAdapter(object):
                     related_capture["primary_file"]
                 )
 
+            timestamp_value = event.get("timestamp")
+            alert_type = (
+                event.get("alert_type")
+                or event.get("event_type")
+                or event.get("status")
+                or "-"
+            )
+            src_ip = event.get("src_ip") or "-"
+            reason = event.get("reason") or "-"
+            status = event.get("status") or "-"
+            quarantine_status = event.get("quarantine_status")
+            row_id = self._alert_row_id(
+                event,
+                timestamp=timestamp_value,
+                category=category,
+                detector=detector,
+                alert_type=alert_type,
+                src_ip=src_ip,
+                reason=reason,
+                status=status,
+                quarantine_status=quarantine_status,
+            )
+
             rows.append(
                 {
-                    "timestamp": event.get("timestamp"),
+                    "row_id": row_id,
+                    "timestamp": timestamp_value,
+                    "timestamp_epoch": self._timestamp_epoch(timestamp_value),
                     "category": category,
                     "action": event.get("action") or category,
-                    "alert_type": (
-                        event.get("alert_type")
-                        or event.get("event_type")
-                        or event.get("status")
-                        or "-"
-                    ),
+                    "alert_type": alert_type,
                     "severity": severity,
-                    "src_ip": event.get("src_ip") or "-",
-                    "reason": event.get("reason") or "-",
+                    "src_ip": src_ip,
+                    "reason": reason,
                     "detector": detector,
-                    "status": event.get("status") or "-",
-                    "quarantine_status": event.get("quarantine_status"),
+                    "status": status,
+                    "quarantine_status": quarantine_status,
                     "related_capture": related_capture,
                     "confidence": event.get("confidence"),
                     "suspicion_score": event.get("suspicion_score"),
@@ -823,7 +1365,69 @@ class DashboardDataAdapter(object):
                     "ml_timestamp": event.get("ml_timestamp"),
                 }
             )
-        return rows
+
+        rows.sort(
+            key=lambda row: (
+                -_safe_float(row.get("timestamp_epoch")),
+                row.get("row_id") or "",
+            )
+        )
+
+        seen_row_ids = set()
+        deduplicated_rows = []
+        for row in rows:
+            row_id = row.get("row_id")
+            if row_id and row_id in seen_row_ids:
+                continue
+            if row_id:
+                seen_row_ids.add(row_id)
+            row.pop("timestamp_epoch", None)
+            deduplicated_rows.append(row)
+        return deduplicated_rows
+
+    @staticmethod
+    def _timestamp_epoch(timestamp_value):
+        if timestamp_value is None:
+            return 0.0
+        if isinstance(timestamp_value, (int, float)):
+            return float(timestamp_value)
+        text_value = str(timestamp_value).strip()
+        if not text_value:
+            return 0.0
+        if text_value.endswith("Z"):
+            text_value = text_value[:-1] + "+00:00"
+        try:
+            return datetime.fromisoformat(text_value).timestamp()
+        except ValueError:
+            return 0.0
+
+    @staticmethod
+    def _alert_row_id(
+        event,
+        timestamp,
+        category,
+        detector,
+        alert_type,
+        src_ip,
+        reason,
+        status,
+        quarantine_status,
+    ):
+        digest_source = "|".join(
+            [
+                str(timestamp or ""),
+                str(category or ""),
+                str(detector or ""),
+                str(alert_type or ""),
+                str(src_ip or ""),
+                str(reason or ""),
+                str(status or ""),
+                str(quarantine_status or ""),
+                str(event.get("confidence") if isinstance(event, dict) else ""),
+                str(event.get("suspicion_score") if isinstance(event, dict) else ""),
+            ]
+        )
+        return hashlib.sha1(digest_source.encode("utf-8")).hexdigest()[:16]
 
     @staticmethod
     def _merge_section_defaults(defaults, overrides):
@@ -1146,8 +1750,10 @@ class DashboardDataAdapter(object):
                     "enabled": False,
                     "mode": "threshold_only",
                     "mode_state_path": "runtime/ids_mode_state.json",
-                    "hybrid_policy": "alert_only",
+                    "hybrid_policy": "layered_consensus",
                     "model_path": "models/random_forest_ids.joblib",
+                    "anomaly_model_path": "",
+                    "inference_mode": "classifier_only",
                     "dataset_path": "datasets/cicids2018.parquet",
                     "feature_window_seconds": 10,
                     "minimum_packets_before_inference": 12,
@@ -1155,6 +1761,15 @@ class DashboardDataAdapter(object):
                     "inference_cooldown_seconds": 2.0,
                     "confidence_threshold": 0.75,
                     "mitigation_threshold": 0.92,
+                    "anomaly_score_threshold": 0.60,
+                    "hybrid_classifier_block_threshold": 0.80,
+                    "hybrid_anomaly_support_threshold": 0.60,
+                    "hybrid_block_repeat_count": 2,
+                    "hybrid_known_family_block_enabled": True,
+                    "hybrid_block_eligible_families": (),
+                    "hybrid_anomaly_trend_threshold": 0.05,
+                    "hybrid_anomaly_only_block_enabled": False,
+                    "hybrid_anomaly_only_block_threshold": 0.85,
                     "alert_suppression_seconds": 20,
                     "hybrid_correlation_window_seconds": 10,
                 },
@@ -1328,11 +1943,21 @@ class DashboardDataAdapter(object):
                     "mode_state_path",
                     "runtime/ids_mode_state.json",
                 ),
-                "hybrid_policy": getattr(ml_config, "hybrid_policy", "alert_only"),
+                "hybrid_policy": getattr(ml_config, "hybrid_policy", "layered_consensus"),
                 "model_path": getattr(
                     ml_config,
                     "model_path",
                     "models/random_forest_ids.joblib",
+                ),
+                "anomaly_model_path": getattr(
+                    ml_config,
+                    "anomaly_model_path",
+                    "",
+                ),
+                "inference_mode": getattr(
+                    ml_config,
+                    "inference_mode",
+                    "classifier_only",
                 ),
                 "dataset_path": getattr(
                     ml_config,
@@ -1374,6 +1999,49 @@ class DashboardDataAdapter(object):
                     "alert_only_threshold",
                     0.55,
                 ),
+                "anomaly_score_threshold": getattr(
+                    ml_config,
+                    "anomaly_score_threshold",
+                    0.60,
+                ),
+                "hybrid_classifier_block_threshold": getattr(
+                    ml_config,
+                    "hybrid_classifier_block_threshold",
+                    0.80,
+                ),
+                "hybrid_anomaly_support_threshold": getattr(
+                    ml_config,
+                    "hybrid_anomaly_support_threshold",
+                    0.60,
+                ),
+                "hybrid_block_repeat_count": getattr(
+                    ml_config,
+                    "hybrid_block_repeat_count",
+                    2,
+                ),
+                "hybrid_known_family_block_enabled": getattr(
+                    ml_config,
+                    "hybrid_known_family_block_enabled",
+                    True,
+                ),
+                "hybrid_block_eligible_families": list(
+                    getattr(ml_config, "hybrid_block_eligible_families", ())
+                ),
+                "hybrid_anomaly_trend_threshold": getattr(
+                    ml_config,
+                    "hybrid_anomaly_trend_threshold",
+                    0.05,
+                ),
+                "hybrid_anomaly_only_block_enabled": getattr(
+                    ml_config,
+                    "hybrid_anomaly_only_block_enabled",
+                    False,
+                ),
+                "hybrid_anomaly_only_block_threshold": getattr(
+                    ml_config,
+                    "hybrid_anomaly_only_block_threshold",
+                    0.85,
+                ),
                 "alert_suppression_seconds": getattr(
                     ml_config,
                     "alert_suppression_seconds",
@@ -1404,7 +2072,7 @@ class DashboardDataAdapter(object):
                 "configured_mode": ids_mode_label(getattr(ml_config, "mode", "threshold_only")),
                 "selected_mode": ids_mode_label(getattr(ml_config, "mode", "threshold_only")),
                 "effective_mode": ids_mode_label(getattr(ml_config, "mode", "threshold_only")),
-                "hybrid_policy": getattr(ml_config, "hybrid_policy", "alert_only"),
+                "hybrid_policy": getattr(ml_config, "hybrid_policy", "layered_consensus"),
                 "model_available": False,
                 "model_path": getattr(
                     ml_config,

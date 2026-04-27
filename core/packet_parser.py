@@ -9,6 +9,7 @@ TCP_FLAG_FIN = 0x01
 TCP_FLAG_SYN = 0x02
 TCP_FLAG_RST = 0x04
 TCP_FLAG_ACK = 0x10
+IPV4_FLAG_MORE_FRAGMENTS = 0x01
 
 
 @dataclass
@@ -23,6 +24,8 @@ class PacketMetadata:
     src_ip: str = None
     dst_ip: str = None
     ip_proto: int = None
+    ip_flags: int = 0
+    ip_fragment_offset: int = 0
     transport_protocol: str = "ethernet"
     src_port: int = None
     dst_port: int = None
@@ -68,6 +71,29 @@ class PacketMetadata:
     def tcp_syn_only(self):
         return bool(self.tcp_syn and not self.tcp_ack and not self.tcp_rst)
 
+    @property
+    def ipv4_more_fragments(self):
+        return bool(self.is_ipv4 and self.ip_flags is not None and self.ip_flags & IPV4_FLAG_MORE_FRAGMENTS)
+
+    @property
+    def is_ipv4_fragmented(self):
+        return bool(self.is_ipv4 and (self.ip_fragment_offset or self.ipv4_more_fragments))
+
+    @property
+    def is_fragmented_tcp_probe(self):
+        if not (
+            self.is_ipv4
+            and self.ip_proto == 6
+            and self.ip_fragment_offset == 0
+            and self.ipv4_more_fragments
+            and self.src_ip
+            and self.dst_ip
+        ):
+            return False
+        if not self.is_tcp:
+            return True
+        return bool(self.tcp_syn_only or self.tcp_flags in (None, 0))
+
 
 class PacketParser(object):
     """Convert raw packet bytes into controller-friendly metadata."""
@@ -110,6 +136,8 @@ class PacketParser(object):
         metadata.src_ip = ipv4_packet.src
         metadata.dst_ip = ipv4_packet.dst
         metadata.ip_proto = ipv4_packet.proto
+        metadata.ip_flags = getattr(ipv4_packet, "flags", 0) or 0
+        metadata.ip_fragment_offset = getattr(ipv4_packet, "offset", 0) or 0
 
         icmp_packet = parsed_packet.get_protocol(icmp.icmp)
         if icmp_packet is not None:

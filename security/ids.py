@@ -43,6 +43,8 @@ class ThresholdIDS(object):
         self.unanswered_syn_windows = defaultdict(deque)
         self.connection_attempts = {}
         self.connection_attempt_queue = deque()
+        self.coarse_connection_attempts = defaultdict(deque)
+        self.coarse_connection_attempt_queue = deque()
         self.alert_cache = {}
         self.alert_windows = defaultdict(deque)
 
@@ -94,6 +96,7 @@ class ThresholdIDS(object):
                 packet_metadata.transport_protocol == "tcp"
                 and packet_metadata.tcp_syn_only
             )
+            or self._is_fragmented_tcp_probe(packet_metadata)
         )
         if should_track_ports and packet_metadata.dst_port is not None:
             port_scan_count, port_probe_count = self._record_destination_port(
@@ -132,6 +135,11 @@ class ThresholdIDS(object):
                     )
                     if alert is not None:
                         alerts.append(alert)
+            elif self._is_fragmented_tcp_probe(packet_metadata):
+                if packet_metadata.src_port is not None and packet_metadata.dst_port is not None:
+                    self._record_syn_attempt(packet_metadata, now)
+                else:
+                    self._record_fragmented_syn_attempt(packet_metadata, now)
 
             if packet_metadata.tcp_rst:
                 failed_count = self._record_failed_connection(packet_metadata, now)
@@ -152,6 +160,8 @@ class ThresholdIDS(object):
                         alerts.append(alert)
             else:
                 self._record_answered_connection(packet_metadata)
+        elif self._is_fragmented_tcp_probe(packet_metadata):
+            self._record_fragmented_syn_attempt(packet_metadata, now)
 
         recon_alert = self._evaluate_probe_patterns(
             packet_metadata=packet_metadata,
@@ -174,6 +184,22 @@ class ThresholdIDS(object):
                 alerts.append(unanswered_alert)
 
         return alerts
+
+    def reset_runtime_session(self):
+        """Clear runtime IDS windows when the active topology session ends."""
+
+        self.packet_windows.clear()
+        self.syn_windows.clear()
+        self.host_windows.clear()
+        self.port_windows.clear()
+        self.failed_connection_windows.clear()
+        self.unanswered_syn_windows.clear()
+        self.connection_attempts.clear()
+        self.connection_attempt_queue.clear()
+        self.coarse_connection_attempts.clear()
+        self.coarse_connection_attempt_queue.clear()
+        self.alert_cache.clear()
+        self.alert_windows.clear()
 
     def describe_source(self, packet_metadata, alerts=None, forwarding_visibility=None):
         """Return recent threshold context for one source host."""
@@ -232,13 +258,38 @@ class ThresholdIDS(object):
             port_scan_count >= max(1, int(port_threshold) - 1)
             and port_probe_count >= max(1, int(probe_threshold) - 1)
         )
-        near_host_threshold = (
-            host_scan_count >= max(1, int(host_threshold) - 1)
-            and host_probe_count >= max(1, int(host_probe_threshold) - 1)
-        )
+        if protocol == "icmp":
+            icmp_repeat_probe_floor = max(
+                int(host_threshold) + 1,
+                int(host_probe_threshold) * 2,
+            )
+            icmp_repeat_probe_span_seconds = self._host_probe_span_seconds(src_ip, now)
+            rapid_repeat_probe_pressure = (
+                host_scan_count >= int(host_threshold)
+                and host_probe_count > icmp_repeat_probe_floor
+                and icmp_repeat_probe_span_seconds
+                <= max(1.0, float(self.ids_config.scan_window_seconds) / 6.0)
+            )
+            # Single-pass reachability checks (for example Mininet pingall) can touch
+            # every host once without indicating reconnaissance intent. Keep these
+            # windows out of recon-suspicious near-miss context unless probe volume
+            # is both strong and rapid enough to indicate hostile probing.
+            near_host_threshold = (
+                host_scan_count > int(host_threshold)
+                or rapid_repeat_probe_pressure
+            )
+        else:
+            near_host_threshold = (
+                host_scan_count >= max(1, int(host_threshold) - 1)
+                and host_probe_count >= max(1, int(host_probe_threshold) - 1)
+            )
         near_unanswered_threshold = unanswered_count >= max(
             1,
             int(self.ids_config.unanswered_syn_threshold) - 1,
+        )
+        near_failed_connection_threshold = failed_count >= max(
+            1,
+            int(self.ids_config.failed_connection_threshold) - 1,
         )
         combined_recon_near = (
             host_scan_count >= max(
@@ -256,7 +307,10 @@ class ThresholdIDS(object):
         )
         recon_suspicion_score = int(near_port_threshold) + int(near_host_threshold) + int(
             near_unanswered_threshold
-        ) + int(combined_recon_near)
+        ) + int(near_failed_connection_threshold) + int(combined_recon_near)
+        threshold_auto_quarantine_eligible = self._threshold_auto_quarantine_eligible(
+            primary_alert
+        )
 
         return {
             "threshold_triggered": bool(alerts),
@@ -293,6 +347,7 @@ class ThresholdIDS(object):
             "recon_suspicion_score": recon_suspicion_score,
             "recon_visible_traffic": forwarding_visibility != "fast_path",
             "forwarding_visibility": forwarding_visibility or "fast_path",
+            "threshold_auto_quarantine_eligible": threshold_auto_quarantine_eligible,
         }
 
     def _record_packet_count(self, src_ip, now):
@@ -321,6 +376,27 @@ class ThresholdIDS(object):
             self.connection_attempt_queue.append((now, attempt_key))
 
         return len(window)
+
+    def _record_fragmented_syn_attempt(self, packet_metadata, now):
+        src_ip = packet_metadata.src_ip
+        if not src_ip or not packet_metadata.dst_ip:
+            return
+
+        window = self.syn_windows[src_ip]
+        window.append(now)
+        self._trim_time_window(window, now, self.ids_config.syn_rate_window_seconds)
+
+        attempt_key = (
+            packet_metadata.src_ip,
+            packet_metadata.dst_ip,
+        )
+        self.coarse_connection_attempts[attempt_key].append(
+            {
+                "timestamp": now,
+                "unanswered_recorded": False,
+            }
+        )
+        self.coarse_connection_attempt_queue.append((now, attempt_key))
 
     def _record_destination_host(self, src_ip, dst_ip, now):
         if not dst_ip:
@@ -353,6 +429,12 @@ class ThresholdIDS(object):
             packet_metadata.src_port,
         )
         attempt_state = self.connection_attempts.pop(attempt_key, None)
+        if attempt_state is None:
+            coarse_attempt_key = (
+                packet_metadata.dst_ip,
+                packet_metadata.src_ip,
+            )
+            attempt_state = self._pop_coarse_attempt(coarse_attempt_key)
         if attempt_state is None:
             return 0
         if attempt_state.get("unanswered_recorded"):
@@ -391,7 +473,13 @@ class ThresholdIDS(object):
             packet_metadata.dst_port,
             packet_metadata.src_port,
         )
-        self.connection_attempts.pop(attempt_key, None)
+        if self.connection_attempts.pop(attempt_key, None) is not None:
+            return
+        coarse_attempt_key = (
+            packet_metadata.dst_ip,
+            packet_metadata.src_ip,
+        )
+        self._pop_coarse_attempt(coarse_attempt_key)
 
     def _record_unanswered_syn(self, src_ip, dst_ip, dst_port, now):
         window = self.unanswered_syn_windows[src_ip]
@@ -412,9 +500,22 @@ class ThresholdIDS(object):
         protocol = packet_metadata.transport_protocol
 
         if protocol == "icmp":
+            host_threshold = int(
+                self.ids_config.icmp_sweep_unique_destination_hosts_threshold
+            )
+            probe_threshold = int(self.ids_config.icmp_sweep_probe_threshold)
+            repeat_probe_floor = max(host_threshold + 1, probe_threshold * 2)
+            probe_span_seconds = self._host_probe_span_seconds(src_ip, now)
+            exceeds_host_coverage = host_scan_count > host_threshold
+            repeated_probe_pressure = (
+                host_scan_count >= host_threshold
+                and host_probe_count > repeat_probe_floor
+                and probe_span_seconds
+                <= max(1.0, float(self.ids_config.scan_window_seconds) / 6.0)
+            )
             if (
-                host_scan_count >= self.ids_config.icmp_sweep_unique_destination_hosts_threshold
-                and host_probe_count >= self.ids_config.icmp_sweep_probe_threshold
+                exceeds_host_coverage
+                or repeated_probe_pressure
             ):
                 return self._build_alert(
                     alert_type="host_scan_detected",
@@ -424,6 +525,9 @@ class ThresholdIDS(object):
                     details={
                         "unique_destination_hosts": host_scan_count,
                         "probe_count": host_probe_count,
+                        "exceeds_host_coverage_threshold": exceeds_host_coverage,
+                        "repeated_probe_pressure": repeated_probe_pressure,
+                        "probe_span_seconds": round(float(probe_span_seconds), 6),
                         "window_seconds": self.ids_config.scan_window_seconds,
                     },
                 )
@@ -523,6 +627,8 @@ class ThresholdIDS(object):
 
     @staticmethod
     def _should_track_destination_hosts(packet_metadata):
+        if ThresholdIDS._is_fragmented_tcp_probe(packet_metadata):
+            return True
         if packet_metadata.transport_protocol == "udp":
             return True
         if packet_metadata.transport_protocol == "tcp":
@@ -565,6 +671,37 @@ class ThresholdIDS(object):
 
     def _expire_attempts(self, now):
         unanswered_sources = set()
+        max_age = max(
+            self.ids_config.connection_attempt_window_seconds,
+            self.ids_config.unanswered_syn_timeout_seconds,
+        )
+
+        # Drop attempts that are older than the connection tracking window
+        # before evaluating unanswered SYN state. This prevents stale scans
+        # from a previous topology session from being converted into fresh
+        # unanswered SYN evidence on the next benign packet.
+        while self.connection_attempt_queue:
+            timestamp, attempt_key = self.connection_attempt_queue[0]
+            if (now - timestamp) <= max_age:
+                break
+            self.connection_attempt_queue.popleft()
+            attempt_state = self.connection_attempts.get(attempt_key)
+            if attempt_state is not None and attempt_state.get("timestamp") == timestamp:
+                del self.connection_attempts[attempt_key]
+
+        while self.coarse_connection_attempt_queue:
+            timestamp, attempt_key = self.coarse_connection_attempt_queue[0]
+            if (now - timestamp) <= max_age:
+                break
+            self.coarse_connection_attempt_queue.popleft()
+            attempt_queue = self.coarse_connection_attempts.get(attempt_key)
+            if not attempt_queue:
+                continue
+            if attempt_queue[0].get("timestamp") == timestamp:
+                attempt_queue.popleft()
+                if not attempt_queue:
+                    del self.coarse_connection_attempts[attempt_key]
+
         unanswered_cutoff = now - self.ids_config.unanswered_syn_timeout_seconds
         for timestamp, attempt_key in self.connection_attempt_queue:
             if timestamp > unanswered_cutoff:
@@ -577,20 +714,42 @@ class ThresholdIDS(object):
             attempt_state["unanswered_recorded"] = True
             unanswered_sources.add(src_ip)
 
-        max_age = max(
-            self.ids_config.connection_attempt_window_seconds,
-            self.ids_config.unanswered_syn_timeout_seconds,
-        )
-        while self.connection_attempt_queue:
-            timestamp, attempt_key = self.connection_attempt_queue[0]
-            if (now - timestamp) <= max_age:
+        while self.coarse_connection_attempt_queue:
+            timestamp, attempt_key = self.coarse_connection_attempt_queue[0]
+            if timestamp > unanswered_cutoff:
                 break
-            self.connection_attempt_queue.popleft()
-            attempt_state = self.connection_attempts.get(attempt_key)
-            if attempt_state is not None and attempt_state.get("timestamp") == timestamp:
-                del self.connection_attempts[attempt_key]
+            self.coarse_connection_attempt_queue.popleft()
+            attempt_queue = self.coarse_connection_attempts.get(attempt_key)
+            if not attempt_queue:
+                continue
+            attempt_state = attempt_queue[0]
+            if attempt_state.get("timestamp") != timestamp:
+                continue
+            attempt_queue.popleft()
+            if not attempt_queue:
+                del self.coarse_connection_attempts[attempt_key]
+            src_ip, dst_ip = attempt_key
+            if not attempt_state.get("unanswered_recorded"):
+                self._record_unanswered_syn(src_ip, dst_ip, None, now)
+                unanswered_sources.add(src_ip)
 
         return unanswered_sources
+
+    def _pop_coarse_attempt(self, attempt_key):
+        attempt_queue = self.coarse_connection_attempts.get(attempt_key)
+        if not attempt_queue:
+            return None
+        attempt_state = attempt_queue.popleft()
+        if not attempt_queue:
+            del self.coarse_connection_attempts[attempt_key]
+        return attempt_state
+
+    @staticmethod
+    def _is_fragmented_tcp_probe(packet_metadata):
+        return bool(
+            packet_metadata is not None
+            and getattr(packet_metadata, "is_fragmented_tcp_probe", False)
+        )
 
     @staticmethod
     def _trim_time_window(window, now, window_seconds):
@@ -624,6 +783,13 @@ class ThresholdIDS(object):
         self._trim_tuple_window(window, now, self.ids_config.scan_window_seconds)
         return len({dst_ip for _, dst_ip in window if dst_ip}), len(window)
 
+    def _host_probe_span_seconds(self, src_ip, now):
+        window = self.host_windows[src_ip]
+        self._trim_tuple_window(window, now, self.ids_config.scan_window_seconds)
+        if len(window) < 2:
+            return 0.0
+        return float(window[-1][0]) - float(window[0][0])
+
     def _port_scan_metrics(self, src_ip, now):
         window = self.port_windows[src_ip]
         self._trim_tuple_window(window, now, self.ids_config.scan_window_seconds)
@@ -645,3 +811,15 @@ class ThresholdIDS(object):
         if normalized:
             return "suspicious"
         return ""
+
+    @staticmethod
+    def _threshold_auto_quarantine_eligible(alert):
+        if alert is None:
+            return True
+        if getattr(alert, "reason", "") != "icmp_sweep_threshold_exceeded":
+            return True
+        details = dict(getattr(alert, "details", {}) or {})
+        exceeds_host_coverage = details.get("exceeds_host_coverage_threshold")
+        if exceeds_host_coverage is None:
+            return True
+        return bool(exceeds_host_coverage)

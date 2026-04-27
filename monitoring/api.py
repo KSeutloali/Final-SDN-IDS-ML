@@ -1,6 +1,6 @@
 """Flask JSON API endpoints for the SDN monitoring dashboard."""
 
-from flask import Blueprint, jsonify, request
+from flask import Blueprint, Response, jsonify, request
 
 from core.ids_mode import normalize_ids_mode_public
 
@@ -151,6 +151,72 @@ def create_api_blueprint(data_adapter, command_queue):
     def captures():
         return jsonify(data_adapter.payload_for("captures"))
 
+    @blueprint.route("/api/captures/delete-selected", methods=["POST"])
+    def captures_delete_selected():
+        payload = request.get_json(silent=True) or {}
+        snapshot_names = payload.get("snapshot_names") or []
+        file_paths = payload.get("file_paths") or []
+
+        if not isinstance(snapshot_names, list) or not isinstance(file_paths, list):
+            return (
+                jsonify(
+                    {
+                        "accepted": False,
+                        "status": "invalid_request",
+                        "reason": "selection_payload_must_be_lists",
+                    }
+                ),
+                400,
+            )
+
+        if not snapshot_names and not file_paths:
+            return (
+                jsonify(
+                    {
+                        "accepted": False,
+                        "status": "invalid_request",
+                        "reason": "empty_selection",
+                    }
+                ),
+                400,
+            )
+
+        result = data_adapter.delete_selected_captures(
+            snapshot_names=snapshot_names,
+            file_paths=file_paths,
+        )
+        return jsonify(
+            {
+                "accepted": True,
+                "status": "completed",
+                "result": result,
+            }
+        )
+
+    @blueprint.route("/api/captures/delete-all", methods=["POST"])
+    def captures_delete_all():
+        payload = request.get_json(silent=True) or {}
+        if payload.get("confirm") is not True:
+            return (
+                jsonify(
+                    {
+                        "accepted": False,
+                        "status": "invalid_request",
+                        "reason": "missing_confirmation",
+                    }
+                ),
+                400,
+            )
+
+        result = data_adapter.delete_all_captures()
+        return jsonify(
+            {
+                "accepted": True,
+                "status": "completed",
+                "result": result,
+            }
+        )
+
     @blueprint.route("/api/ml-ids", methods=["GET"])
     def ml_ids():
         return jsonify(data_adapter.payload_for("ml_ids"))
@@ -179,5 +245,50 @@ def create_api_blueprint(data_adapter, command_queue):
     def timeseries():
         payload = data_adapter.read()
         return jsonify({"timeseries": payload.get("timeseries", [])})
+
+    @blueprint.route("/api/reports", methods=["GET"])
+    def reports():
+        return jsonify(
+            {
+                "reports": data_adapter.available_reports(),
+            }
+        )
+
+    @blueprint.route("/api/reports/<path:report_key>", methods=["GET"])
+    def report_download(report_key):
+        requested_format = request.args.get("format")
+        try:
+            report = data_adapter.build_report(
+                report_key,
+                requested_format=requested_format,
+            )
+        except KeyError:
+            return (
+                jsonify(
+                    {
+                        "found": False,
+                        "report": report_key,
+                    }
+                ),
+                404,
+            )
+        except ValueError:
+            return (
+                jsonify(
+                    {
+                        "found": False,
+                        "report": report_key,
+                        "reason": "unsupported_format",
+                    }
+                ),
+                400,
+            )
+
+        response = Response(report["content"], mimetype=report["mime_type"])
+        if request.args.get("download", "1") != "0":
+            response.headers["Content-Disposition"] = (
+                'attachment; filename="%s"' % report["filename"]
+            )
+        return response
 
     return blueprint

@@ -184,11 +184,18 @@ class MLConfig:
     enabled: bool = False
     mode: str = "threshold_only"
     mode_state_path: str = "runtime/ids_mode_state.json"
-    hybrid_policy: str = "alert_only"
+    # Threshold remains authoritative; layered consensus lets ML elevate
+    # threshold-near-miss traffic into blocking only when configured support is strong.
+    hybrid_policy: str = "layered_consensus"
     model_path: str = "models/random_forest_ids.joblib"
+    anomaly_model_path: str = ""
+    inference_mode: str = "classifier_only"
     dataset_path: str = "datasets/cicids2018.parquet"
     dataset_recording_enabled: bool = False
     dataset_recording_path: str = "runtime/ml_dataset.jsonl"
+    dataset_recording_mode: str = "packet"
+    dataset_snapshot_stride: int = 10
+    dataset_record_debug_context: bool = False
     dataset_label_path: str = "runtime/dataset_label.json"
     dataset_label_refresh_seconds: float = 1.0
     dataset_record_unlabeled: bool = False
@@ -201,9 +208,29 @@ class MLConfig:
     confidence_threshold: float = 0.75
     mitigation_threshold: float = 0.92
     alert_only_threshold: float = 0.55
+    anomaly_score_threshold: float = 0.60
+    hybrid_classifier_block_threshold: float = 0.80
+    hybrid_anomaly_support_threshold: float = 0.60
+    # Count repeated suspicious, threshold-near-miss, or ML windows before they are
+    # treated as persistent enough to support a hybrid block decision.
+    hybrid_block_repeat_count: int = 2
+    # Optional override for how many threshold near-miss windows are required
+    # before near-miss persistence contributes to hybrid escalation.
+    hybrid_threshold_near_miss_repeat_count: int = 2
+    hybrid_known_family_block_enabled: bool = True
+    hybrid_block_eligible_families: Tuple[str, ...] = field(default_factory=tuple)
+    # Treat a rising anomaly score as additional evidence only after a meaningful jump.
+    hybrid_anomaly_trend_threshold: float = 0.05
+    # Keep anomaly-only blocking disabled by default; when enabled it requires a much
+    # stronger anomaly score than alert/watchlist mode.
+    hybrid_anomaly_only_block_enabled: bool = False
+    # Calibrated to remain conservative while still reachable with the current
+    # anomaly model score range.
+    hybrid_anomaly_only_block_threshold: float = 0.75
     alert_suppression_seconds: int = 20
     hybrid_correlation_window_seconds: int = 10
     ml_only_escalation_count: int = 3
+    anomaly_only_escalation_count: int = 3
     ml_only_escalation_enabled: bool = False
     capture_on_ml_only_alert: bool = True
     positive_labels: Tuple[str, ...] = (
@@ -485,12 +512,20 @@ def load_config():
             ),
             hybrid_policy=_env_str(
                 "SDN_ML_HYBRID_POLICY",
-                "alert_only",
+                "layered_consensus",
             ).strip().lower(),
             model_path=_env_str(
                 "SDN_ML_MODEL_PATH",
                 "models/random_forest_runtime_final.joblib",
             ),
+            anomaly_model_path=_env_str(
+                "SDN_ML_ANOMALY_MODEL_PATH",
+                "",
+            ),
+            inference_mode=_env_str(
+                "SDN_ML_INFERENCE_MODE",
+                "classifier_only",
+            ).strip().lower(),
             dataset_path=_env_str(
                 "SDN_ML_DATASET_PATH",
                 "datasets/cicids2018.parquet",
@@ -502,6 +537,18 @@ def load_config():
             dataset_recording_path=_env_str(
                 "SDN_ML_DATASET_RECORDING_PATH",
                 "runtime/ml_dataset.jsonl",
+            ),
+            dataset_recording_mode=_env_str(
+                "SDN_ML_DATASET_RECORDING_MODE",
+                "packet",
+            ).strip().lower(),
+            dataset_snapshot_stride=_env_int(
+                "SDN_ML_DATASET_SNAPSHOT_STRIDE",
+                10,
+            ),
+            dataset_record_debug_context=_env_bool(
+                "SDN_ML_DATASET_RECORD_DEBUG_CONTEXT",
+                False,
             ),
             dataset_label_path=_env_str(
                 "SDN_ML_DATASET_LABEL_PATH",
@@ -551,6 +598,46 @@ def load_config():
                 "SDN_ML_ALERT_ONLY_THRESHOLD",
                 0.55,
             ),
+            anomaly_score_threshold=_env_float(
+                "SDN_ML_ANOMALY_SCORE_THRESHOLD",
+                0.60,
+            ),
+            hybrid_classifier_block_threshold=_env_float(
+                "SDN_ML_HYBRID_CLASSIFIER_BLOCK_THRESHOLD",
+                0.80,
+            ),
+            hybrid_anomaly_support_threshold=_env_float(
+                "SDN_ML_HYBRID_ANOMALY_SUPPORT_THRESHOLD",
+                0.60,
+            ),
+            hybrid_block_repeat_count=_env_int(
+                "SDN_ML_HYBRID_BLOCK_REPEAT_COUNT",
+                2,
+            ),
+            hybrid_threshold_near_miss_repeat_count=_env_int(
+                "SDN_ML_HYBRID_THRESHOLD_NEAR_MISS_REPEAT_COUNT",
+                2,
+            ),
+            hybrid_known_family_block_enabled=_env_bool(
+                "SDN_ML_HYBRID_KNOWN_FAMILY_BLOCK_ENABLED",
+                True,
+            ),
+            hybrid_block_eligible_families=_env_tuple(
+                "SDN_ML_HYBRID_BLOCK_ELIGIBLE_FAMILIES",
+                (),
+            ),
+            hybrid_anomaly_trend_threshold=_env_float(
+                "SDN_ML_HYBRID_ANOMALY_TREND_THRESHOLD",
+                0.05,
+            ),
+            hybrid_anomaly_only_block_enabled=_env_bool(
+                "SDN_ML_HYBRID_ANOMALY_ONLY_BLOCK_ENABLED",
+                False,
+            ),
+            hybrid_anomaly_only_block_threshold=_env_float(
+                "SDN_ML_HYBRID_ANOMALY_ONLY_BLOCK_THRESHOLD",
+                0.75,
+            ),
             alert_suppression_seconds=_env_int(
                 "SDN_ML_ALERT_SUPPRESSION_SECONDS",
                 20,
@@ -561,6 +648,10 @@ def load_config():
             ),
             ml_only_escalation_count=_env_int(
                 "SDN_ML_ONLY_ESCALATION_COUNT",
+                3,
+            ),
+            anomaly_only_escalation_count=_env_int(
+                "SDN_ML_ANOMALY_ONLY_ESCALATION_COUNT",
                 3,
             ),
             ml_only_escalation_enabled=_env_bool(

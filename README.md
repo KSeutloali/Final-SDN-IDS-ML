@@ -242,8 +242,11 @@ start the controller in `hybrid` ML mode by default using the portable runtime m
 ```dotenv
 SDN_ML_ENABLED=true
 SDN_IDS_MODE=hybrid
-SDN_ML_HYBRID_POLICY=alert_only
+SDN_ML_MODE=hybrid
+SDN_ML_HYBRID_POLICY=layered_consensus
 SDN_ML_MODEL_PATH=models/random_forest_runtime_final.joblib
+SDN_ML_ANOMALY_MODEL_PATH=models/isolation_forest_benign_heavy_20260417b.joblib
+SDN_ML_INFERENCE_MODE=combined
 SDN_ML_FEATURE_WINDOW_SECONDS=3
 SDN_ML_CONFIDENCE_THRESHOLD=0.65
 SDN_ML_MITIGATION_THRESHOLD=0.80
@@ -308,11 +311,18 @@ The project now includes an optional ML-based IDS extension that sits alongside 
 - `ml_only`: only the ML path is used, but if the model file is unavailable the controller falls back safely to threshold IDS.
 - `hybrid`: threshold detections remain authoritative, while ML adds suspicion scores, separate `event=ml` logs, and optional mitigation for high-confidence predictions.
 
-The default hybrid policy is `alert_only`, which means:
+The default hybrid policy is `layered_consensus`, which means:
 
 - threshold detections trigger immediate mitigation
-- ML detections raise separate alerts
-- ML-only mitigation can be enabled with `SDN_ML_HYBRID_POLICY=high_confidence_block`
+- threshold-near-miss recon can be elevated into blocking when classifier confidence and supporting context are strong enough
+- anomaly-only outcomes remain alert/watchlist-oriented unless you explicitly enable the narrow anomaly-only block path
+- you can still force a more permissive ML-led posture with `SDN_ML_HYBRID_POLICY=high_confidence_block`
+
+For consistent stealth-scan validation from Mininet, prefer `-Pn` so Nmap does not stop at host discovery before the TCP scan phase:
+
+```text
+mininet> h1 nmap -Pn -sS -T2 -f --randomize-host 10.0.0.2
+```
 
 ### Offline Training
 

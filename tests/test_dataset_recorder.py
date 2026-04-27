@@ -14,6 +14,9 @@ class RuntimeDatasetRecorderTests(unittest.TestCase):
         defaults = {
             "dataset_recording_enabled": True,
             "dataset_recording_path": str(output_path),
+            "dataset_recording_mode": "packet",
+            "dataset_snapshot_stride": 10,
+            "dataset_record_debug_context": False,
             "dataset_label_path": str(label_path),
             "dataset_label_refresh_seconds": 0.0,
             "dataset_record_unlabeled": False,
@@ -63,6 +66,10 @@ class RuntimeDatasetRecorderTests(unittest.TestCase):
                         "rate_parameter": "timing=T4,retries=0",
                         "concurrency_level": "1",
                         "capture_file": "captures/output/example.pcap",
+                        "expected_detection_target": "classifier",
+                        "threshold_evasive": True,
+                        "known_family": True,
+                        "blended_with_benign": False,
                         "note": "unit-test",
                         "source": "manual",
                     }
@@ -109,13 +116,23 @@ class RuntimeDatasetRecorderTests(unittest.TestCase):
             self.assertEqual(row["Rate Parameter"], "timing=T4,retries=0")
             self.assertEqual(row["Concurrency Level"], "1")
             self.assertEqual(row["Capture File"], "captures/output/example.pcap")
+            self.assertEqual(row["Expected Detection Target"], "classifier")
+            self.assertTrue(row["Threshold Evasive"])
+            self.assertTrue(row["Known Family"])
+            self.assertFalse(row["Blended With Benign"])
             self.assertEqual(row["Total Packets"], 1)
             self.assertEqual(row["Total Bytes"], 128)
             self.assertEqual(row["SYN Flag Count"], 1)
             self.assertEqual(row["RST Flag Count"], 0)
+            self.assertEqual(row["Recording Mode"], "packet")
+            self.assertEqual(row["Observation Index"], 1)
+            self.assertEqual(row["Snapshot Sample Count"], 1)
             self.assertIn("Runtime unanswered_syn_rate", row)
             self.assertIn("Runtime unanswered_syn_ratio", row)
             self.assertIn("Runtime destination_port_fanout_ratio", row)
+            self.assertIn("Runtime inter_arrival_mean_short", row)
+            self.assertIn("Runtime destination_ip_entropy_short", row)
+            self.assertIn("Runtime host_packet_rate_baseline_ratio", row)
             self.assertTrue(row["Threshold Triggered"])
             self.assertEqual(row["Threshold Rule Family"], "recon")
             self.assertEqual(row["Threshold Unanswered SYN Count"], 3)
@@ -133,6 +150,87 @@ class RuntimeDatasetRecorderTests(unittest.TestCase):
 
             self.assertFalse(recorded)
             self.assertFalse(output_path.exists())
+
+    def test_snapshot_recording_emits_one_row_at_configured_stride(self):
+        with TemporaryDirectory() as temporary_directory:
+            directory = Path(temporary_directory)
+            output_path = directory / "ml_dataset.jsonl"
+            label_path = directory / "dataset_label.json"
+            label_path.write_text(
+                json.dumps(
+                    {
+                        "label": "benign",
+                        "scenario": "http_browse",
+                        "scenario_id": "benign_http_01",
+                        "scenario_family": "benign_http_repeated",
+                        "expected_detection_target": "",
+                        "threshold_evasive": False,
+                        "known_family": False,
+                        "blended_with_benign": False,
+                        "source": "manual",
+                    }
+                )
+            )
+
+            recorder = RuntimeDatasetRecorder(
+                self._ml_config(
+                    output_path,
+                    label_path,
+                    dataset_recording_mode="snapshot",
+                    dataset_snapshot_stride=2,
+                )
+            )
+
+            first_recorded = recorder.record(
+                self._packet(timestamp=1000.0, dst_port=80, src_port=42424)
+            )
+            second_recorded = recorder.record(
+                self._packet(timestamp=1001.0, dst_port=81, src_port=42425)
+            )
+
+            self.assertFalse(first_recorded)
+            self.assertTrue(second_recorded)
+            rows = [json.loads(line) for line in output_path.read_text().splitlines() if line.strip()]
+            self.assertEqual(len(rows), 1)
+            row = rows[0]
+            self.assertEqual(row["Label"], "benign")
+            self.assertEqual(row["Scenario Family"], "benign_http_repeated")
+            self.assertEqual(row["Recording Mode"], "snapshot")
+            self.assertEqual(row["Observation Index"], 2)
+            self.assertEqual(row["Snapshot Stride"], 2)
+            self.assertEqual(row["Snapshot Sample Count"], 2)
+            self.assertFalse(row["Threshold Evasive"])
+            self.assertFalse(row["Known Family"])
+            self.assertFalse(row["Blended With Benign"])
+            self.assertGreaterEqual(row["Total Packets"], 2)
+            self.assertIn("Runtime packet_count", row)
+
+    def test_snapshot_recording_can_include_optional_debug_context_fields(self):
+        with TemporaryDirectory() as temporary_directory:
+            directory = Path(temporary_directory)
+            output_path = directory / "ml_dataset.jsonl"
+            label_path = directory / "dataset_label.json"
+            label_path.write_text(json.dumps({"label": "benign", "source": "manual"}))
+
+            recorder = RuntimeDatasetRecorder(
+                self._ml_config(
+                    output_path,
+                    label_path,
+                    dataset_recording_mode="snapshot",
+                    dataset_snapshot_stride=1,
+                    dataset_record_debug_context=True,
+                )
+            )
+
+            recorded = recorder.record(self._packet(timestamp=1000.0, dst_port=80, src_port=43000))
+
+            self.assertTrue(recorded)
+            row = json.loads(output_path.read_text().splitlines()[0])
+            self.assertIn("Context Short Window Samples", row)
+            self.assertIn("Context Long Window Samples", row)
+            self.assertIn("Context Pending Connection Attempts", row)
+            self.assertIn("Context Unanswered Window Samples", row)
+            self.assertEqual(row["Context Short Window Samples"], 1)
 
 
 if __name__ == "__main__":

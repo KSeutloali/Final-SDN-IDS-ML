@@ -27,7 +27,7 @@ from controller.events import (
 from controller.forwarding_policy import classify_visibility, should_install_forward_flow
 from core.command_queue import ControllerCommandQueue
 from core.flow_manager import FlowManager
-from core.ids_mode import IDSModeStateStore
+from core.ids_mode import IDSModeStateStore, resolve_startup_ids_mode
 from core.packet_parser import PacketParser
 from monitoring.logger import StructuredLogger, configure_logger
 from monitoring.metrics import MetricsStore
@@ -36,7 +36,11 @@ from ml.dataset_recorder import RuntimeDatasetRecorder
 from ml.pipeline import MLIDSPipeline
 from security.firewall import FirewallPolicy
 from security.ids import ThresholdIDS
-from security.mitigation import MitigationService
+from security.mitigation import (
+    MitigationService,
+    clear_quarantines_for_topology_idle,
+    should_auto_quarantine_threshold_alert,
+)
 
 
 class SecurityController(app_manager.RyuApp):
@@ -77,14 +81,16 @@ class SecurityController(app_manager.RyuApp):
             logger=base_logger,
             manage_workers=False,
         )
+        self._last_reconnect_reset_at = 0.0
         self.mitigation = MitigationService(
             firewall=self.firewall,
             metrics=self.metrics,
             event_logger=self.event_logger,
             default_block_seconds=self.config.firewall.dynamic_block_duration_seconds,
         )
-        restored_mode = self.ids_mode_store.current_mode(
-            default=self.ml_pipeline.status().get("selected_mode_api", "threshold"),
+        restored_mode = resolve_startup_ids_mode(
+            self.ml_pipeline.status().get("configured_mode_api", "threshold"),
+            state_store=self.ids_mode_store,
         )
         restore_result = self.ml_pipeline.set_mode(restored_mode)
         self._persist_ids_mode_state(
@@ -163,6 +169,10 @@ class SecurityController(app_manager.RyuApp):
     @set_ev_cls(ofp_event.EventOFPSwitchFeatures, CONFIG_DISPATCHER)
     def switch_features_handler(self, event):
         datapath = event.msg.datapath
+        dpid = format_dpid(datapath.id)
+        existing_datapath = self.state.datapaths.get(datapath.id)
+        if existing_datapath is not None and existing_datapath is not datapath:
+            self._reset_runtime_state_for_datapath_reconnect(dpid)
         dpid = register_datapath(self.state, datapath)
         self.flow_manager.install_table_miss(datapath)
         self.firewall.install_baseline_rules(datapath)
@@ -299,6 +309,15 @@ class SecurityController(app_manager.RyuApp):
                     alert_type=alert.alert_type,
                     detector="threshold",
                 )
+            elif not should_auto_quarantine_threshold_alert(alert):
+                quarantine_status = "alert_only"
+                self.event_logger.security_event(
+                    "mitigation_suppressed",
+                    src_ip=alert.src_ip,
+                    reason="icmp_sweep_requires_excess_host_coverage_for_auto_quarantine",
+                    alert_type=alert.alert_type,
+                    detector="threshold",
+                )
             else:
                 mitigation = self.mitigation.handle_alert(
                     alert,
@@ -406,6 +425,14 @@ class SecurityController(app_manager.RyuApp):
             model_name=alert.model_name,
             label=alert.label,
             agreement_with_threshold=alert.details.get("agreement_with_threshold"),
+            correlation_status=alert.details.get("correlation_status"),
+            predicted_family=alert.details.get("predicted_family"),
+            classifier_confidence=alert.details.get("classifier_confidence"),
+            anomaly_score=alert.details.get("anomaly_score"),
+            threshold_reason=alert.details.get("threshold_reason"),
+            repeated_window_count=alert.details.get("repeated_window_count"),
+            block_decision_path=alert.details.get("block_decision_path"),
+            final_block_reason=alert.details.get("final_block_reason"),
             related_capture=(
                 snapshot.get("primary_file")
                 if snapshot is not None
@@ -510,8 +537,33 @@ class SecurityController(app_manager.RyuApp):
             hub.sleep(heartbeat_interval)
 
     def _reset_live_runtime_state(self, last_dpid):
+        released_quarantines = []
+        if self.config.mitigation.auto_unblock_enabled:
+            released_quarantines = clear_quarantines_for_topology_idle(self.firewall)
+            if released_quarantines:
+                released_sources = sorted(
+                    record.src_ip
+                    for record in released_quarantines
+                    if getattr(record, "src_ip", None)
+                )
+                self.metrics.record_controller_event(
+                    "topology_idle_quarantine_reset",
+                    {
+                        "released_hosts_count": len(released_sources),
+                        "released_hosts": released_sources,
+                        "reason": "auto_unblock_enabled",
+                    },
+                )
+                self.event_logger.security_event(
+                    "topology_idle_quarantine_reset",
+                    released_hosts_count=len(released_sources),
+                    released_hosts=",".join(released_sources),
+                    reason="auto_unblock_enabled",
+                )
+
         clear_runtime_topology_state(self.state)
         self.metrics.reset_runtime_session()
+        self.ids.reset_runtime_session()
         self.ml_pipeline.reset_runtime_session()
         self.metrics.record_controller_event(
             "topology_idle",
@@ -524,6 +576,43 @@ class SecurityController(app_manager.RyuApp):
             "topology_idle",
             dpid=last_dpid,
             reason="all_switches_disconnected",
+        )
+
+    def _reset_runtime_state_for_datapath_reconnect(self, dpid):
+        now = time.time()
+        if (now - self._last_reconnect_reset_at) < 2.0:
+            return
+        self._last_reconnect_reset_at = now
+
+        released_sources = []
+        if self.config.mitigation.auto_unblock_enabled:
+            released = clear_quarantines_for_topology_idle(self.firewall)
+            released_sources = sorted(
+                record.src_ip
+                for record in released
+                if getattr(record, "src_ip", None)
+            )
+
+        clear_runtime_topology_state(self.state)
+        self.metrics.reset_runtime_session()
+        self.ids.reset_runtime_session()
+        self.ml_pipeline.reset_runtime_session()
+
+        self.metrics.record_controller_event(
+            "datapath_reconnect_runtime_reset",
+            {
+                "dpid": dpid,
+                "released_hosts_count": len(released_sources),
+                "released_hosts": released_sources,
+                "reason": "replacement_datapath_detected",
+            },
+        )
+        self.event_logger.controller_event(
+            "datapath_reconnect_runtime_reset",
+            dpid=dpid,
+            released_hosts_count=len(released_sources),
+            released_hosts=",".join(released_sources),
+            reason="replacement_datapath_detected",
         )
 
     def _should_suppress_dataset_collection_mitigation(self):
@@ -790,6 +879,8 @@ class SecurityController(app_manager.RyuApp):
                 "mode_state_path": self.config.ml.mode_state_path,
                 "hybrid_policy": self.config.ml.hybrid_policy,
                 "model_path": self.config.ml.model_path,
+                "anomaly_model_path": self.config.ml.anomaly_model_path,
+                "inference_mode": self.config.ml.inference_mode,
                 "dataset_path": self.config.ml.dataset_path,
                 "feature_window_seconds": self.config.ml.feature_window_seconds,
                 "minimum_packets_before_inference": self.config.ml.minimum_packets_before_inference,
@@ -798,11 +889,40 @@ class SecurityController(app_manager.RyuApp):
                 "confidence_threshold": self.config.ml.confidence_threshold,
                 "mitigation_threshold": self.config.ml.mitigation_threshold,
                 "alert_only_threshold": self.config.ml.alert_only_threshold,
+                "anomaly_score_threshold": self.config.ml.anomaly_score_threshold,
+                "hybrid_classifier_block_threshold": (
+                    self.config.ml.hybrid_classifier_block_threshold
+                ),
+                "hybrid_anomaly_support_threshold": (
+                    self.config.ml.hybrid_anomaly_support_threshold
+                ),
+                "hybrid_block_repeat_count": self.config.ml.hybrid_block_repeat_count,
+                "hybrid_threshold_near_miss_repeat_count": (
+                    self.config.ml.hybrid_threshold_near_miss_repeat_count
+                ),
+                "hybrid_known_family_block_enabled": (
+                    self.config.ml.hybrid_known_family_block_enabled
+                ),
+                "hybrid_block_eligible_families": list(
+                    self.config.ml.hybrid_block_eligible_families
+                ),
+                "hybrid_anomaly_trend_threshold": (
+                    self.config.ml.hybrid_anomaly_trend_threshold
+                ),
+                "hybrid_anomaly_only_block_enabled": (
+                    self.config.ml.hybrid_anomaly_only_block_enabled
+                ),
+                "hybrid_anomaly_only_block_threshold": (
+                    self.config.ml.hybrid_anomaly_only_block_threshold
+                ),
                 "alert_suppression_seconds": self.config.ml.alert_suppression_seconds,
                 "hybrid_correlation_window_seconds": (
                     self.config.ml.hybrid_correlation_window_seconds
                 ),
                 "ml_only_escalation_count": self.config.ml.ml_only_escalation_count,
+                "anomaly_only_escalation_count": (
+                    self.config.ml.anomaly_only_escalation_count
+                ),
                 "ml_only_escalation_enabled": self.config.ml.ml_only_escalation_enabled,
                 "capture_on_ml_only_alert": self.config.ml.capture_on_ml_only_alert,
             },

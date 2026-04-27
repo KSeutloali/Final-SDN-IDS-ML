@@ -16,6 +16,48 @@ class MitigationResult(object):
     related_capture: dict = None
 
 
+def should_auto_quarantine_threshold_alert(alert):
+    """Return whether one threshold IDS alert should auto-quarantine the source.
+
+    Threshold detections remain authoritative. The only narrow exception is
+    ICMP sweep alerts that do not exceed the unique-host coverage threshold:
+    those are treated as alert-only because benign reachability checks can
+    generate the same repeated-probe pattern in compact lab topologies.
+    """
+
+    if alert is None:
+        return False
+
+    if getattr(alert, "reason", "") != "icmp_sweep_threshold_exceeded":
+        return True
+
+    details = dict(getattr(alert, "details", {}) or {})
+    exceeds_host_coverage = details.get("exceeds_host_coverage_threshold")
+    if exceeds_host_coverage is None:
+        return True
+    return bool(exceeds_host_coverage)
+
+
+def clear_quarantines_for_topology_idle(firewall):
+    """Release in-memory quarantine records when the lab topology is reset.
+
+    This helper is intentionally state-only: when all switches are disconnected
+    there are no active datapaths to program, so removing stale records here
+    prevents old quarantine state from being re-applied on the next topology run.
+    """
+
+    if firewall is None:
+        return []
+
+    quarantined_hosts = getattr(firewall, "quarantined_hosts", None)
+    if not quarantined_hosts:
+        return []
+
+    released_records = list(quarantined_hosts.values())
+    quarantined_hosts.clear()
+    return released_records
+
+
 class MitigationService(object):
     """Apply indefinite quarantine rules and manual release operations."""
 
@@ -120,4 +162,3 @@ class MitigationService(object):
         """Compatibility shim: indefinite quarantine means there are no expirations."""
 
         return []
-

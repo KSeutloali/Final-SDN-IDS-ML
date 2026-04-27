@@ -12,7 +12,7 @@
     <div class="control-stack">
       <label class="field" for="ids-mode-selector">
         <span class="field__label">IDS Mode</span>
-        <select class="field__control js-ids-mode-selector" id="ids-mode-selector">
+        <select class="field__control js-ids-mode-selector" id="ids-mode-selector" disabled>
           <option value="threshold">Threshold IDS</option>
           <option value="ml">ML IDS</option>
           <option value="hybrid">Hybrid</option>
@@ -21,16 +21,16 @@
       <div class="mode-status-row">
         <div class="mode-state">
           <span class="field__label">Selected</span>
-          <strong id="ids-mode-selected">Threshold IDS</strong>
+          <strong id="ids-mode-selected">Loading...</strong>
         </div>
         <div class="mode-state">
           <span class="field__label">Effective</span>
-          <strong id="ids-mode-effective">Threshold IDS</strong>
+          <strong id="ids-mode-effective">Loading...</strong>
         </div>
       </div>
-      <div class="mode-feedback mode-feedback--success" id="ids-mode-status">Ready</div>
+      <div class="mode-feedback mode-feedback--warning" id="ids-mode-status">Loading runtime mode...</div>
       <p class="form-hint" id="ids-mode-help">
-        Threshold remains the baseline. ML and Hybrid need a runtime model.
+        Loading current IDS runtime state...
       </p>
     </div>
   </article>

@@ -188,6 +188,165 @@ class DashboardStateTests(unittest.TestCase):
                 "capture_state_stale",
             )
 
+    def test_alert_rows_use_stable_row_ids_and_deduplicate(self):
+        adapter = DashboardDataAdapter(
+            type(
+                "Config",
+                (),
+                {
+                    "dashboard": DashboardConfig(state_file_path="runtime/test_dashboard_state.json"),
+                    "ml": type(
+                        "ML",
+                        (),
+                        {
+                            "mode": "threshold_only",
+                            "hybrid_policy": "alert_only",
+                            "model_path": "models/random_forest_ids.joblib",
+                        },
+                    )(),
+                },
+            )()
+        )
+        events = [
+            {
+                "timestamp": "2026-04-26T12:00:00+00:00",
+                "category": "ids_alert",
+                "alert_type": "port_scan_detected",
+                "src_ip": "10.0.0.3",
+                "reason": "tcp_scan_threshold_exceeded",
+            },
+            {
+                "timestamp": "2026-04-26T12:00:00+00:00",
+                "category": "ids_alert",
+                "alert_type": "port_scan_detected",
+                "src_ip": "10.0.0.3",
+                "reason": "tcp_scan_threshold_exceeded",
+            },
+            {
+                "timestamp": "2026-04-26T12:00:01+00:00",
+                "category": "ml_alert",
+                "alert_type": "ml_detected",
+                "src_ip": "10.0.0.7",
+                "reason": "model_confidence_high",
+            },
+        ]
+
+        rows = adapter._alert_rows(events)
+
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(rows[0]["src_ip"], "10.0.0.7")
+        self.assertTrue(all("row_id" in row and len(row["row_id"]) == 16 for row in rows))
+        self.assertNotEqual(rows[0]["row_id"], rows[1]["row_id"])
+
+    def test_capture_delete_selected_removes_snapshot_and_ring_files(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            dashboard_config = DashboardConfig(
+                state_file_path=temp_dir + "/dashboard_state.json",
+                persist_interval_seconds=0.0,
+                timeseries_points=4,
+            )
+            adapter = DashboardDataAdapter(
+                type(
+                    "Config",
+                    (),
+                    {
+                        "dashboard": dashboard_config,
+                        "ml": type(
+                            "ML",
+                            (),
+                            {
+                                "mode": "threshold_only",
+                                "hybrid_policy": "alert_only",
+                                "model_path": "models/random_forest_ids.joblib",
+                            },
+                        )(),
+                        "capture": type(
+                            "Capture",
+                            (),
+                            {"output_directory": temp_dir + "/captures"},
+                        )(),
+                    },
+                )()
+            )
+            adapter.capture_root = Path(temp_dir) / "captures"
+            adapter.capture_root.mkdir(parents=True, exist_ok=True)
+            snapshots_dir = adapter.capture_root / "snapshots" / "snapshot_a"
+            snapshots_dir.mkdir(parents=True, exist_ok=True)
+            (snapshots_dir / "capture-a.pcap").write_bytes(b"pcap-a")
+            (snapshots_dir / "snapshot.json").write_text("{}", encoding="utf-8")
+
+            ring_dir = adapter.capture_root / "continuous" / "ring" / "s2-eth3"
+            ring_dir.mkdir(parents=True, exist_ok=True)
+            ring_file = ring_dir / "ring-1.pcap"
+            ring_file.write_bytes(b"pcap-b")
+
+            result = adapter.delete_selected_captures(
+                snapshot_names=["snapshot_a"],
+                file_paths=["continuous/ring/s2-eth3/ring-1.pcap"],
+            )
+
+            self.assertEqual(result["deleted_snapshot_count"], 1)
+            self.assertEqual(result["deleted_file_count"], 2)
+            self.assertFalse((adapter.capture_root / "snapshots" / "snapshot_a").exists())
+            self.assertFalse(ring_file.exists())
+
+    def test_build_report_returns_downloadable_content(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state_file_path = temp_dir + "/dashboard_state.json"
+            dashboard_config = DashboardConfig(
+                state_file_path=state_file_path,
+                persist_interval_seconds=0.0,
+                timeseries_points=4,
+            )
+            Path(state_file_path).write_text(
+                json.dumps(
+                    {
+                        "generated_at": "2026-04-26T12:34:56+00:00",
+                        "summary": {
+                            "alerts_total": 4,
+                            "threshold_alerts_total": 3,
+                            "ml_alerts_total": 1,
+                            "active_blocks": 2,
+                        },
+                        "ml_status": {
+                            "configured_mode": "hybrid",
+                            "selected_mode": "hybrid",
+                            "effective_mode": "hybrid",
+                            "model_available": True,
+                            "model_path": "models/test.joblib",
+                        },
+                    },
+                    sort_keys=True,
+                ),
+                encoding="utf-8",
+            )
+
+            adapter = DashboardDataAdapter(
+                type(
+                    "Config",
+                    (),
+                    {
+                        "dashboard": dashboard_config,
+                        "ml": type(
+                            "ML",
+                            (),
+                            {
+                                "mode": "threshold_only",
+                                "hybrid_policy": "alert_only",
+                                "model_path": "models/random_forest_ids.joblib",
+                            },
+                        )(),
+                    },
+                )()
+            )
+
+            report = adapter.build_report("hybrid-summary")
+
+            self.assertEqual(report["format"], "json")
+            self.assertTrue(report["filename"].endswith(".json"))
+            self.assertIn("application/json", report["mime_type"])
+            self.assertIn("detector_totals", report["content"].decode("utf-8"))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -15,16 +15,17 @@
         }
       })();
     </script>
-    <link rel="stylesheet" href="{{ url_for('static', filename='styles.css', v='20260408n') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='styles.css', v='20260426a') }}">
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js" defer></script>
     <script src="{{ url_for('static', filename='chart-fallback.js', v='20260319b') }}" defer></script>
-    <script src="{{ url_for('static', filename='dashboard.js', v='20260408m') }}" defer></script>
+    <script src="{{ url_for('static', filename='dashboard.js', v='20260426a') }}" defer></script>
   </head>
   <body
     data-base-path="{{ base_path }}"
     data-poll-interval-ms="{{ poll_interval_ms }}"
     data-page="{{ page_name }}"
     data-api-endpoint="{{ page_api }}"
+    data-dashboard-hydrated="false"
   >
     <div class="app-shell">
       <aside class="sidebar" id="sidebar">
@@ -81,11 +82,11 @@
           <div class="topbar__right">
             <div class="topbar-stat">
               <span class="topbar-stat__label">Mode</span>
-              <span class="badge badge--info" id="chrome-ml-mode">Threshold IDS</span>
+              <span class="badge badge--neutral" id="chrome-ml-mode">Loading...</span>
             </div>
             <div class="topbar-stat">
               <span class="topbar-stat__label">Updated</span>
-              <span class="topbar-stat__value" id="chrome-last-updated">Waiting</span>
+              <span class="topbar-stat__value" id="chrome-last-updated">Loading...</span>
             </div>
             <div class="topbar-stat">
               <span class="topbar-stat__label">State</span>

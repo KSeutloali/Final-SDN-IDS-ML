@@ -302,6 +302,20 @@ class MetricsStore(object):
             "suspicion_score": round(float(prediction.suspicion_score), 6),
             "is_malicious": bool(prediction.is_malicious),
             "model_name": prediction.model_name,
+            "predicted_family": str(getattr(prediction, "predicted_family", "") or ""),
+            "anomaly_score": round(
+                float(getattr(prediction, "anomaly_score", 0.0) or 0.0),
+                6,
+            ),
+            "is_anomalous": bool(getattr(prediction, "is_anomalous", False)),
+            "explanation_version": str(
+                dict(getattr(prediction, "explanations", {}) or {}).get("version", "")
+                or ""
+            ),
+            "explanation_summary": str(
+                dict(getattr(prediction, "explanations", {}) or {}).get("summary", "")
+                or ""
+            ),
         }
         self.recent_ml_predictions.appendleft(event)
 
