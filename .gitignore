@@ -19,3 +19,5 @@ runtime/*.jsonl
 runtime/controller_commands/
 captures/output/continuous/
 captures/output/snapshots/
+.venv/
+runtime/anomaly_eval_inputs/
