@@ -38,17 +38,27 @@
     </div>
   </div>
   <div class="table-shell">
-    <table class="data-table data-table--alerts">
+    <table class="data-table data-table--alerts js-resizable-alerts-table">
+      <colgroup>
+        <col class="alerts-col alerts-col--time">
+        <col class="alerts-col alerts-col--severity">
+        <col class="alerts-col alerts-col--type">
+        <col class="alerts-col alerts-col--detector">
+        <col class="alerts-col alerts-col--source">
+        <col class="alerts-col alerts-col--reason">
+        <col class="alerts-col alerts-col--block">
+        <col class="alerts-col alerts-col--evidence">
+      </colgroup>
       <thead>
         <tr>
-          <th>Time</th>
-          <th>Severity</th>
-          <th>Type</th>
-          <th>Detector</th>
-          <th>Source</th>
-          <th>Reason</th>
-          <th>Block</th>
-          <th>Evidence</th>
+          <th title="Time">Time</th>
+          <th title="Severity">Severity</th>
+          <th title="Alert Type">Type</th>
+          <th title="Detection Source">Detector</th>
+          <th title="Source IP">Source</th>
+          <th title="Detection Reason">Reason</th>
+          <th title="Block Status">Block</th>
+          <th title="Evidence Link">Evidence</th>
         </tr>
       </thead>
       <tbody id="alerts-table"></tbody>

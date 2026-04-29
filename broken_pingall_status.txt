@@ -1,0 +1,13 @@
+ M .env.example
+ M config/settings.py
+ M controller/main.py
+ M docker-compose.yml
+ M ml/inference.py
+ M ml/pipeline.py
+ M monitoring/state.py
+ M security/mitigation.py
+ M tests/test_config.py
+ M tests/test_mitigation.py
+ M tests/test_ml_pipeline.py
+?? broken_pingall_attempt.patch
+?? broken_pingall_status.txt

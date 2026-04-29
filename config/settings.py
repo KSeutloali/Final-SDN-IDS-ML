@@ -89,6 +89,9 @@ class FirewallConfig:
     permit_icmp_external: bool = False
     default_allow_ipv4: bool = True
     blocked_source_ips: Tuple[str, ...] = field(default_factory=tuple)
+    protected_source_ips: Tuple[str, ...] = field(
+        default_factory=lambda: ("10.0.0.254",)
+    )
     restricted_tcp_ports: Tuple[int, ...] = (23,)
     restricted_udp_ports: Tuple[int, ...] = field(default_factory=tuple)
     dynamic_block_duration_seconds: int = 60
@@ -187,6 +190,11 @@ class MLConfig:
     # Threshold remains authoritative; layered consensus lets ML elevate
     # threshold-near-miss traffic into blocking only when configured support is strong.
     hybrid_policy: str = "layered_consensus"
+    enable_random_forest: bool = True
+    enable_isolation_forest: bool = True
+    hybrid_block_enabled: bool = True
+    hybrid_anomaly_block_enabled: bool = True
+    require_threshold_for_ml_block: bool = False
     model_path: str = "models/random_forest_ids.joblib"
     anomaly_model_path: str = ""
     inference_mode: str = "classifier_only"
@@ -310,6 +318,10 @@ def load_config():
             blocked_source_ips=_env_tuple(
                 "SDN_FIREWALL_BLOCKED_SOURCE_IPS",
                 (),
+            ),
+            protected_source_ips=_env_tuple(
+                "SDN_FIREWALL_PROTECTED_SOURCE_IPS",
+                ("10.0.0.254",),
             ),
             restricted_tcp_ports=_env_int_tuple(
                 "SDN_FIREWALL_RESTRICTED_TCP_PORTS",
@@ -514,6 +526,26 @@ def load_config():
                 "SDN_ML_HYBRID_POLICY",
                 "layered_consensus",
             ).strip().lower(),
+            enable_random_forest=_env_bool(
+                "SDN_ML_ENABLE_RANDOM_FOREST",
+                True,
+            ),
+            enable_isolation_forest=_env_bool(
+                "SDN_ML_ENABLE_ISOLATION_FOREST",
+                True,
+            ),
+            hybrid_block_enabled=_env_bool(
+                "SDN_ML_HYBRID_BLOCK_ENABLED",
+                True,
+            ),
+            hybrid_anomaly_block_enabled=_env_bool(
+                "SDN_ML_HYBRID_ANOMALY_BLOCK_ENABLED",
+                True,
+            ),
+            require_threshold_for_ml_block=_env_bool(
+                "SDN_ML_REQUIRE_THRESHOLD_FOR_ML_BLOCK",
+                False,
+            ),
             model_path=_env_str(
                 "SDN_ML_MODEL_PATH",
                 "models/random_forest_runtime_final.joblib",
@@ -604,7 +636,7 @@ def load_config():
             ),
             hybrid_classifier_block_threshold=_env_float(
                 "SDN_ML_HYBRID_CLASSIFIER_BLOCK_THRESHOLD",
-                0.80,
+                _env_float("SDN_ML_RF_BLOCK_CONFIDENCE", 0.80),
             ),
             hybrid_anomaly_support_threshold=_env_float(
                 "SDN_ML_HYBRID_ANOMALY_SUPPORT_THRESHOLD",
@@ -632,11 +664,11 @@ def load_config():
             ),
             hybrid_anomaly_only_block_enabled=_env_bool(
                 "SDN_ML_HYBRID_ANOMALY_ONLY_BLOCK_ENABLED",
-                False,
+                _env_bool("SDN_ML_ANOMALY_ONLY_BLOCK_ENABLED", False),
             ),
             hybrid_anomaly_only_block_threshold=_env_float(
                 "SDN_ML_HYBRID_ANOMALY_ONLY_BLOCK_THRESHOLD",
-                0.75,
+                _env_float("SDN_ML_ANOMALY_BLOCK_THRESHOLD", 0.75),
             ),
             alert_suppression_seconds=_env_int(
                 "SDN_ML_ALERT_SUPPRESSION_SECONDS",

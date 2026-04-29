@@ -69,7 +69,19 @@
   </div>
   <div class="table-scroll-layout js-scroll-layout">
     <div class="table-shell table-shell--snapshots table-shell--scroll js-scroll-shell" id="captures-snapshots-shell">
-      <table class="data-table data-table--snapshots">
+      <table class="data-table data-table--snapshots js-resizable-snapshots-table">
+        <colgroup>
+          <col class="snapshots-col snapshots-col--select">
+          <col class="snapshots-col snapshots-col--snapshot">
+          <col class="snapshots-col snapshots-col--timestamp">
+          <col class="snapshots-col snapshots-col--source">
+          <col class="snapshots-col snapshots-col--detector">
+          <col class="snapshots-col snapshots-col--alert-type">
+          <col class="snapshots-col snapshots-col--files">
+          <col class="snapshots-col snapshots-col--size">
+          <col class="snapshots-col snapshots-col--status">
+          <col class="snapshots-col snapshots-col--download">
+        </colgroup>
         <thead>
           <tr>
             <th class="table-select-cell">
@@ -80,15 +92,15 @@
                 aria-label="Select all visible snapshots"
               >
             </th>
-            <th>Snapshot</th>
-            <th>Timestamp</th>
-            <th>Source IP</th>
-            <th>Detector</th>
-            <th>Alert Type</th>
-            <th>Files</th>
-            <th>Size</th>
-            <th>Status</th>
-            <th>Download</th>
+            <th title="Snapshot Name">Snapshot</th>
+            <th title="Capture Timestamp">Timestamp</th>
+            <th title="Source IP">Source IP</th>
+            <th title="Detector">Detector</th>
+            <th title="Alert Type">Alert Type</th>
+            <th title="File Count">Files</th>
+            <th title="Total Size">Size</th>
+            <th title="Snapshot Status">Status</th>
+            <th title="Primary Download">Download</th>
           </tr>
         </thead>
         <tbody id="captures-session-table"></tbody>
@@ -125,7 +137,18 @@
   </div>
   <div class="table-scroll-layout js-scroll-layout">
     <div class="table-shell table-shell--scroll js-scroll-shell" id="captures-files-shell">
-      <table class="data-table data-table--captures-files">
+      <table class="data-table data-table--captures-files js-resizable-ring-buffer-table">
+        <colgroup>
+          <col class="ring-col ring-col--select">
+          <col class="ring-col ring-col--capture-type">
+          <col class="ring-col ring-col--scenario">
+          <col class="ring-col ring-col--interface">
+          <col class="ring-col ring-col--file">
+          <col class="ring-col ring-col--status">
+          <col class="ring-col ring-col--size">
+          <col class="ring-col ring-col--modified">
+          <col class="ring-col ring-col--download">
+        </colgroup>
         <thead>
           <tr>
             <th class="table-select-cell">
@@ -136,14 +159,14 @@
                 aria-label="Select all visible ring captures"
               >
             </th>
-            <th>Capture Type</th>
-            <th>Scenario</th>
-            <th>Interface</th>
-            <th>File</th>
-            <th>Status</th>
-            <th>Size</th>
-            <th>Modified</th>
-            <th>Download</th>
+            <th title="Capture Type">Capture Type</th>
+            <th title="Scenario">Scenario</th>
+            <th title="Interface">Interface</th>
+            <th title="File Name">File</th>
+            <th title="Capture Status">Status</th>
+            <th title="File Size">Size</th>
+            <th title="Last Modified">Modified</th>
+            <th title="Download File">Download</th>
           </tr>
         </thead>
         <tbody id="captures-file-table"></tbody>

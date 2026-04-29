@@ -2,6 +2,7 @@
 
 from collections import defaultdict, deque
 from dataclasses import dataclass, field
+import ipaddress
 
 from core.ids_mode import (
     ids_mode_label,
@@ -139,7 +140,23 @@ class MLIDSPipeline(object):
             "effective_mode_api": normalize_ids_mode_public(effective_mode),
             "effective_mode_label": ids_mode_label(effective_mode),
             "hybrid_policy": self.hybrid_policy,
+            "hybrid_block_enabled": bool(
+                getattr(self.ml_config, "hybrid_block_enabled", True)
+            ),
+            "hybrid_anomaly_block_enabled": bool(
+                getattr(self.ml_config, "hybrid_anomaly_block_enabled", True)
+            ),
+            "require_threshold_for_ml_block": bool(
+                getattr(self.ml_config, "require_threshold_for_ml_block", False)
+            ),
+            "enable_random_forest": bool(
+                getattr(self.ml_config, "enable_random_forest", True)
+            ),
+            "enable_isolation_forest": bool(
+                getattr(self.ml_config, "enable_isolation_forest", True)
+            ),
             "model_available": self.inference_engine.is_available,
+            "classifier_model_available": self.model_bundle.is_available,
             "model_path": self.model_bundle.source_path or self.ml_config.model_path,
             "model_error": self.model_bundle.load_error,
             "inference_mode": getattr(self.inference_engine, "selected_mode", "classifier_only"),
@@ -179,7 +196,10 @@ class MLIDSPipeline(object):
                 self._hybrid_anomaly_only_required_windows()
             ),
             "hybrid_memory_window_seconds": float(self._decision_memory_window_seconds()),
-            "anomaly_model_available": self.anomaly_bundle.is_available,
+            "anomaly_model_available": bool(
+                self.anomaly_bundle.is_available
+                and getattr(self.ml_config, "enable_isolation_forest", True)
+            ),
             "anomaly_model_path": self.anomaly_bundle.source_path or getattr(
                 self.ml_config,
                 "anomaly_model_path",
@@ -355,6 +375,23 @@ class MLIDSPipeline(object):
         anomaly_only_signal = is_anomalous and not classifier_detected
         abnormal_feature_summary = self._summarize_abnormal_features(prediction)
         hybrid_block_support = {"eligible": False, "reason": "", "reasons": []}
+        threshold_signal_present = bool(threshold_triggered or threshold_suspicious or agreement)
+        classifier_block_signal = bool(
+            classifier_detected
+            and classifier_suspicion_score
+            >= float(getattr(self.ml_config, "hybrid_classifier_block_threshold", 0.0))
+        )
+        anomaly_block_signal = bool(
+            is_anomalous
+            and anomaly_score
+            >= float(getattr(self.ml_config, "hybrid_anomaly_support_threshold", 0.0))
+        )
+        anomaly_only_block_signal = bool(
+            anomaly_only_signal
+            and is_anomalous
+            and anomaly_score
+            >= float(getattr(self.ml_config, "hybrid_anomaly_only_block_threshold", 0.0))
+        )
         low_confidence_suspicious = (
             not prediction.is_malicious
             and float(prediction.suspicion_score) >= float(self.ml_config.alert_only_threshold)
@@ -433,7 +470,12 @@ class MLIDSPipeline(object):
                 if hybrid_block_support["eligible"]:
                     should_mitigate = True
                     severity = "critical"
-                    decision = "hybrid_ml_block"
+                    decision = self._hybrid_block_decision(
+                        threshold_signal_present=threshold_signal_present,
+                        classifier_block_signal=classifier_block_signal,
+                        anomaly_block_signal=anomaly_block_signal,
+                        anomaly_only_block_signal=anomaly_only_block_signal,
+                    )
                     reason = hybrid_block_support["reason"]
             else:
                 if anomaly_only_signal:
@@ -458,7 +500,12 @@ class MLIDSPipeline(object):
                     if hybrid_block_support["eligible"]:
                         should_mitigate = True
                         severity = "critical"
-                        decision = "hybrid_ml_block"
+                        decision = self._hybrid_block_decision(
+                            threshold_signal_present=threshold_signal_present,
+                            classifier_block_signal=classifier_block_signal,
+                            anomaly_block_signal=anomaly_block_signal,
+                            anomaly_only_block_signal=anomaly_only_block_signal,
+                        )
                         reason = hybrid_block_support["reason"]
                 else:
                     correlation_status = "anomaly_only" if low_confidence_suspicious else "ml_only"
@@ -501,11 +548,48 @@ class MLIDSPipeline(object):
                     if hybrid_block_support["eligible"]:
                         should_mitigate = True
                         severity = "critical"
-                        decision = "hybrid_ml_block"
+                        decision = self._hybrid_block_decision(
+                            threshold_signal_present=threshold_signal_present,
+                            classifier_block_signal=classifier_block_signal,
+                            anomaly_block_signal=anomaly_block_signal,
+                            anomaly_only_block_signal=anomaly_only_block_signal,
+                        )
                         reason = hybrid_block_support["reason"]
 
         if should_mitigate and reason == prediction.reason:
             reason = "ml_confidence_above_mitigation_threshold"
+
+        block_suppression_reason = ""
+        if should_mitigate:
+            block_suppression_reason = self._block_suppression_reason(
+                prediction.src_ip,
+                threshold_context=threshold_context,
+            )
+            if block_suppression_reason:
+                should_mitigate = False
+                severity = "high" if severity == "critical" else severity
+                if anomaly_only_signal:
+                    decision = "anomaly_only_alert"
+                elif threshold_signal_present:
+                    decision = "threshold_enriched_by_ml"
+                else:
+                    decision = "ml_only_alert"
+
+        detection_sources = []
+        if threshold_signal_present:
+            detection_sources.append("threshold")
+        if classifier_detected:
+            detection_sources.append("random_forest")
+        if is_anomalous:
+            detection_sources.append("isolation_forest")
+        final_action = "quarantine" if should_mitigate else (
+            "alert_only" if decision != "log_only" else "allow"
+        )
+        final_decision = decision
+        alert_type = self._resolve_alert_type(
+            detection_sources=detection_sources,
+            decision=final_decision,
+        )
 
         explanation_payload = self._build_alert_explanation(
             prediction,
@@ -519,8 +603,18 @@ class MLIDSPipeline(object):
             "agreement_with_threshold": agreement,
             "hybrid_status": correlation_status,
             "correlation_status": correlation_status,
+            "detection_sources": list(detection_sources),
+            "final_decision": final_decision,
+            "final_action": final_action,
+            "decision_reason": reason,
+            "alert_type": alert_type,
+            "source_ip": prediction.src_ip,
+            "destination_ip": threshold_context.get("dst_ip", ""),
+            "source_mac": threshold_context.get("src_mac", ""),
+            "destination_mac": threshold_context.get("dst_mac", ""),
             "threshold_triggered": threshold_triggered,
             "threshold_reason": threshold_context.get("threshold_reason", ""),
+            "threshold_alert_type": threshold_context.get("threshold_alert_type", ""),
             "threshold_rule_family": threshold_context.get("threshold_rule_family", ""),
             "threshold_severity": threshold_context.get("threshold_severity", ""),
             "threshold_recent_event_count": int(
@@ -563,6 +657,17 @@ class MLIDSPipeline(object):
             ),
             "block_decision_path": hybrid_block_support.get("decision_path", ""),
             "final_block_reason": reason if should_mitigate else "",
+            "block_suppressed": bool(block_suppression_reason),
+            "block_suppression_reason": block_suppression_reason,
+            "hybrid_block_enabled": bool(
+                getattr(self.ml_config, "hybrid_block_enabled", True)
+            ),
+            "hybrid_anomaly_block_enabled": bool(
+                getattr(self.ml_config, "hybrid_anomaly_block_enabled", True)
+            ),
+            "require_threshold_for_ml_block": bool(
+                getattr(self.ml_config, "require_threshold_for_ml_block", False)
+            ),
             "hybrid_classifier_block_threshold": round(
                 float(self.ml_config.hybrid_classifier_block_threshold),
                 6,
@@ -603,12 +708,25 @@ class MLIDSPipeline(object):
             "suspicion_score": round(float(prediction.suspicion_score), 6),
             "label": prediction.label,
             "predicted_family": predicted_family,
+            "model_mode": getattr(self.inference_engine, "effective_mode", "unavailable"),
+            "model_mode_requested": getattr(self.inference_engine, "selected_mode", "classifier_only"),
+            "feature_window_size_seconds": int(
+                getattr(self.ml_config, "feature_window_seconds", 0) or 0
+            ),
             "anomaly_score": round(float(anomaly_score), 6),
             "is_anomalous": is_anomalous,
             "hybrid_anomaly_support": hybrid_anomaly_support,
             "classifier_detected": classifier_detected,
             "classifier_confidence": round(float(classifier_confidence), 6),
             "classifier_suspicion_score": round(float(classifier_suspicion_score), 6),
+            "random_forest_prediction": prediction.label,
+            "random_forest_confidence": round(float(classifier_confidence), 6),
+            "random_forest_suspicion_score": round(
+                float(classifier_suspicion_score),
+                6,
+            ),
+            "isolation_forest_anomalous": is_anomalous,
+            "isolation_forest_anomaly_score": round(float(anomaly_score), 6),
             "anomaly_reason": anomaly_reason,
             "abnormal_feature_summary": abnormal_feature_summary,
             "abnormal_feature_details": explanation_payload["feature_context"].get(
@@ -679,7 +797,7 @@ class MLIDSPipeline(object):
         }
         return MLAlert(
             src_ip=prediction.src_ip,
-            alert_type="random_forest_detected",
+            alert_type=alert_type,
             reason=reason,
             severity=severity,
             timestamp=prediction.timestamp,
@@ -687,10 +805,86 @@ class MLIDSPipeline(object):
             suspicion_score=prediction.suspicion_score,
             label=prediction.label,
             model_name=prediction.model_name,
-            decision=decision,
+            decision=final_decision,
             should_mitigate=should_mitigate,
             details=details,
         )
+
+    @staticmethod
+    def _hybrid_block_decision(
+        threshold_signal_present,
+        classifier_block_signal,
+        anomaly_block_signal,
+        anomaly_only_block_signal,
+    ):
+        if threshold_signal_present and classifier_block_signal and anomaly_block_signal:
+            return "full_hybrid_block"
+        if threshold_signal_present and classifier_block_signal:
+            return "threshold_rf_block"
+        if threshold_signal_present and anomaly_block_signal:
+            return "threshold_if_block"
+        if classifier_block_signal and anomaly_block_signal:
+            return "rf_if_consensus_block"
+        if anomaly_only_block_signal:
+            return "anomaly_only_block"
+        return "ml_only_block"
+
+    @staticmethod
+    def _resolve_alert_type(detection_sources, decision):
+        sources = tuple(sorted(set(detection_sources or [])))
+        if sources == ("threshold",):
+            return "threshold_detected"
+        if sources == ("random_forest",):
+            return "random_forest_detected"
+        if sources == ("isolation_forest",):
+            return "isolation_forest_detected"
+        if sources == ("random_forest", "threshold"):
+            return "hybrid_threshold_rf_detected"
+        if sources == ("isolation_forest", "threshold"):
+            return "hybrid_threshold_if_detected"
+        if sources == ("isolation_forest", "random_forest"):
+            return "hybrid_rf_if_detected"
+        if sources == ("isolation_forest", "random_forest", "threshold"):
+            return "hybrid_full_detected"
+        if decision == "anomaly_only_alert" or decision == "anomaly_only_block":
+            return "isolation_forest_detected"
+        return "random_forest_detected"
+
+    @staticmethod
+    def _block_suppression_reason(src_ip, threshold_context=None):
+        threshold_context = dict(threshold_context or {})
+        address = str(src_ip or "").strip()
+        if not address:
+            return "missing_source_ip"
+        try:
+            parsed = ipaddress.ip_address(address)
+        except ValueError:
+            return "invalid_source_ip"
+        if parsed.is_unspecified or parsed.is_loopback:
+            return "controller_or_unspecified_source_ip"
+        if parsed.is_multicast:
+            return "multicast_source_ip"
+        if parsed == ipaddress.ip_address("255.255.255.255"):
+            return "broadcast_source_ip"
+        internal_subnet = str(threshold_context.get("internal_subnet", "") or "").strip()
+        if internal_subnet:
+            try:
+                internal_network = ipaddress.ip_network(internal_subnet, strict=False)
+            except ValueError:
+                internal_network = None
+            if internal_network is not None:
+                if parsed == internal_network.network_address:
+                    return "network_address_source_ip"
+                if parsed == internal_network.broadcast_address:
+                    return "broadcast_source_ip"
+        protected = set(
+            item.strip()
+            for item in threshold_context.get("protected_source_ips", [])
+            if str(item).strip()
+        )
+        if address in protected:
+            return "protected_source_ip"
+        return ""
 
     def _should_infer(self, feature_snapshot, now):
         if feature_snapshot.sample_count < self.ml_config.minimum_packets_before_inference:
@@ -971,7 +1165,13 @@ class MLIDSPipeline(object):
             "support_count": 0,
             "context_support_count": 0,
         }
+        if not bool(getattr(self.ml_config, "hybrid_block_enabled", True)):
+            return empty
         if self.hybrid_policy not in ("high_confidence_block", "layered_consensus"):
+            return empty
+        if bool(getattr(self.ml_config, "require_threshold_for_ml_block", False)) and not (
+            threshold_suspicious or threshold_triggered
+        ):
             return empty
         if not bool(getattr(prediction, "is_malicious", False)):
             return empty
@@ -994,13 +1194,16 @@ class MLIDSPipeline(object):
         near_miss_repeat_threshold = int(self._hybrid_threshold_near_miss_repeat_count())
         anomaly_only_required_windows = int(self._hybrid_anomaly_only_required_windows())
         recon_score = int(threshold_context.get("recon_suspicion_score", 0) or 0)
+        anomaly_block_enabled = bool(
+            getattr(self.ml_config, "hybrid_anomaly_block_enabled", True)
+        )
         high_classifier = bool(classifier_detected) and (
             float(classifier_suspicion_score) >= classifier_threshold
         )
-        high_anomaly = bool(is_anomalous) and (
+        high_anomaly = anomaly_block_enabled and bool(is_anomalous) and (
             float(anomaly_score) >= anomaly_support_threshold
         )
-        very_high_anomaly = bool(is_anomalous) and (
+        very_high_anomaly = anomaly_block_enabled and bool(is_anomalous) and (
             float(anomaly_score) >= anomaly_block_threshold
         )
         repeat_count = int(decision_memory.get("signal_window_count", 0) or 0)
@@ -1090,10 +1293,24 @@ class MLIDSPipeline(object):
                     "support_count": len(reasons),
                     "context_support_count": threshold_context_supports_block,
                 }
-            if known_family and high_classifier and classifier_context_supports_block >= 2:
+            if threshold_suspicious and high_anomaly and threshold_context_supports_block:
                 return {
                     "eligible": True,
-                    "reason": "known_family_prediction_supported_by_context",
+                    "reason": "threshold_suspicion_elevated_by_anomaly_evidence",
+                    "reasons": reasons,
+                    "decision_path": "threshold_suspicion_elevated_by_if",
+                    "support_count": len(reasons),
+                    "context_support_count": threshold_context_supports_block,
+                }
+            if (
+                known_family
+                and high_classifier
+                and high_anomaly
+                and classifier_context_supports_block >= 2
+            ):
+                return {
+                    "eligible": True,
+                    "reason": "known_family_prediction_supported_by_anomaly_context",
                     "reasons": reasons,
                     "decision_path": "classifier_led_known_family_block",
                     "support_count": len(reasons),
@@ -1115,6 +1332,21 @@ class MLIDSPipeline(object):
                     "decision_path": "classifier_anomaly_consensus_block",
                     "support_count": len(reasons),
                     "context_support_count": 4,
+                }
+            if (
+                not threshold_suspicious
+                and not threshold_triggered
+                and high_classifier
+                and high_anomaly
+                and repeated_signal
+            ):
+                return {
+                    "eligible": True,
+                    "reason": "classifier_and_anomaly_consensus_without_threshold_trigger",
+                    "reasons": reasons,
+                    "decision_path": "rf_if_consensus_block",
+                    "support_count": len(reasons),
+                    "context_support_count": max(2, classifier_context_supports_block),
                 }
             if (
                 getattr(self.ml_config, "hybrid_anomaly_only_block_enabled", False)
@@ -1159,14 +1391,43 @@ class MLIDSPipeline(object):
                 "support_count": len(reasons),
                 "context_support_count": threshold_context_supports_block,
             }
-        if known_family and high_classifier and classifier_context_supports_block:
+        if threshold_suspicious and high_anomaly and threshold_context_supports_block:
             return {
                 "eligible": True,
-                "reason": "known_family_prediction_supported_by_high_confidence_classifier",
+                "reason": "threshold_suspicion_elevated_by_anomaly_evidence",
+                "reasons": reasons,
+                "decision_path": "threshold_suspicion_elevated_by_if",
+                "support_count": len(reasons),
+                "context_support_count": threshold_context_supports_block,
+            }
+        if (
+            known_family
+            and high_classifier
+            and high_anomaly
+            and classifier_context_supports_block
+        ):
+            return {
+                "eligible": True,
+                "reason": "known_family_prediction_supported_by_anomaly_context",
                 "reasons": reasons,
                 "decision_path": "classifier_led_known_family_block",
                 "support_count": len(reasons),
                 "context_support_count": classifier_context_supports_block,
+            }
+        if (
+            not threshold_suspicious
+            and not threshold_triggered
+            and high_classifier
+            and high_anomaly
+            and repeated_signal
+        ):
+            return {
+                "eligible": True,
+                "reason": "classifier_and_anomaly_consensus_without_threshold_trigger",
+                "reasons": reasons,
+                "decision_path": "rf_if_consensus_block",
+                "support_count": len(reasons),
+                "context_support_count": max(2, classifier_context_supports_block),
             }
         if (
             getattr(self.ml_config, "hybrid_anomaly_only_block_enabled", False)

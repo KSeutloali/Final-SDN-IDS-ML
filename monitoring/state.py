@@ -22,6 +22,16 @@ def _utc_iso(timestamp_value):
     return datetime.fromtimestamp(timestamp_value, timezone.utc).isoformat()
 
 
+def _normalize_epoch_seconds(value):
+    numeric_value = _safe_float(value)
+    if numeric_value <= 0.0:
+        return 0.0
+    # Treat very large values as millisecond epochs.
+    if numeric_value >= 1_000_000_000_000:
+        numeric_value /= 1000.0
+    return numeric_value
+
+
 def _safe_float(value):
     try:
         return float(value)
@@ -316,7 +326,7 @@ class DashboardStateWriter(object):
                     "reason": block.reason,
                     "detector": block.detector or "threshold",
                     "alert_type": block.alert_type,
-                    "created_at": _utc_label(block.created_at),
+                    "created_at": _utc_iso(block.created_at),
                     "created_at_epoch": block.created_at,
                     "status": "quarantined",
                     "related_capture": related_capture,
@@ -940,15 +950,33 @@ class DashboardDataAdapter(object):
         summary["active_quarantines"] = summary.get("active_blocks", 0)
         state["summary"] = summary
 
-        recent_events = list(state.get("recent_events") or [])
-        recent_security_events = list(state.get("recent_security_events") or [])
-        recent_ml_predictions = list(state.get("recent_ml_predictions") or [])
-        recent_hybrid_events = list(state.get("recent_hybrid_events") or [])
+        recent_events = self._normalize_row_timestamps(
+            list(state.get("recent_events") or []),
+            ("timestamp", "threshold_timestamp", "ml_timestamp"),
+        )
+        recent_security_events = self._normalize_row_timestamps(
+            list(state.get("recent_security_events") or []),
+            ("timestamp", "threshold_timestamp", "ml_timestamp"),
+        )
+        recent_ml_predictions = self._normalize_row_timestamps(
+            list(state.get("recent_ml_predictions") or []),
+            ("timestamp",),
+        )
+        recent_hybrid_events = self._normalize_row_timestamps(
+            list(state.get("recent_hybrid_events") or []),
+            ("timestamp", "threshold_timestamp", "ml_timestamp"),
+        )
         timeseries = list(state.get("timeseries") or [])
-        blocked_hosts = list(state.get("blocked_hosts") or [])
+        blocked_hosts = self._normalize_row_timestamps(
+            list(state.get("blocked_hosts") or []),
+            ("created_at",),
+        )
         active_threshold_blocks = 0
         active_ml_blocks = 0
         for row in blocked_hosts:
+            created_epoch = _normalize_epoch_seconds(row.get("created_at_epoch"))
+            if created_epoch > 0.0:
+                row["created_at"] = _utc_iso(created_epoch)
             detector = (row.get("detector") or "threshold").strip().lower()
             if detector == "ml":
                 active_ml_blocks += 1
@@ -1092,6 +1120,30 @@ class DashboardDataAdapter(object):
             "effective_mode_api": ml_status.get("effective_mode_api") or normalize_ids_mode_public(effective_mode),
             "effective_mode_label": ml_status.get("effective_mode_label") or ids_mode_label(effective_mode),
             "hybrid_policy": ml_status.get("hybrid_policy") or self.app_config.ml.hybrid_policy,
+            "enable_random_forest": bool(
+                ml_status.get("enable_random_forest", getattr(self.app_config.ml, "enable_random_forest", True))
+            ),
+            "enable_isolation_forest": bool(
+                ml_status.get(
+                    "enable_isolation_forest",
+                    getattr(self.app_config.ml, "enable_isolation_forest", True),
+                )
+            ),
+            "hybrid_block_enabled": bool(
+                ml_status.get("hybrid_block_enabled", getattr(self.app_config.ml, "hybrid_block_enabled", True))
+            ),
+            "hybrid_anomaly_block_enabled": bool(
+                ml_status.get(
+                    "hybrid_anomaly_block_enabled",
+                    getattr(self.app_config.ml, "hybrid_anomaly_block_enabled", True),
+                )
+            ),
+            "require_threshold_for_ml_block": bool(
+                ml_status.get(
+                    "require_threshold_for_ml_block",
+                    getattr(self.app_config.ml, "require_threshold_for_ml_block", False),
+                )
+            ),
             "model_available": bool(ml_status.get("model_available")),
             "model_path": ml_status.get("model_path") or self.app_config.ml.model_path,
             "model_error": ml_status.get("model_error"),
@@ -1133,6 +1185,17 @@ class DashboardDataAdapter(object):
             "selected_mode": ml_payload.get("selected_mode_label", "Threshold IDS"),
             "effective_mode": ml_payload.get("effective_mode_label", "Threshold IDS"),
             "hybrid_policy": ml_payload.get("hybrid_policy", "layered_consensus"),
+            "enable_random_forest": ml_payload.get("enable_random_forest", True),
+            "enable_isolation_forest": ml_payload.get("enable_isolation_forest", True),
+            "hybrid_block_enabled": ml_payload.get("hybrid_block_enabled", True),
+            "hybrid_anomaly_block_enabled": ml_payload.get(
+                "hybrid_anomaly_block_enabled",
+                True,
+            ),
+            "require_threshold_for_ml_block": ml_payload.get(
+                "require_threshold_for_ml_block",
+                False,
+            ),
             "model_available": ml_payload.get("model_available", False),
             "model_path": ml_payload.get("model_path", ""),
         }
@@ -1321,7 +1384,18 @@ class DashboardDataAdapter(object):
                     related_capture["primary_file"]
                 )
 
-            timestamp_value = event.get("timestamp")
+            timestamp_value = (
+                self._normalize_timestamp_iso(event.get("timestamp"))
+                or event.get("timestamp")
+            )
+            threshold_timestamp = (
+                self._normalize_timestamp_iso(event.get("threshold_timestamp"))
+                or event.get("threshold_timestamp")
+            )
+            ml_timestamp = (
+                self._normalize_timestamp_iso(event.get("ml_timestamp"))
+                or event.get("ml_timestamp")
+            )
             alert_type = (
                 event.get("alert_type")
                 or event.get("event_type")
@@ -1361,8 +1435,8 @@ class DashboardDataAdapter(object):
                     "related_capture": related_capture,
                     "confidence": event.get("confidence"),
                     "suspicion_score": event.get("suspicion_score"),
-                    "threshold_timestamp": event.get("threshold_timestamp"),
-                    "ml_timestamp": event.get("ml_timestamp"),
+                    "threshold_timestamp": threshold_timestamp,
+                    "ml_timestamp": ml_timestamp,
                 }
             )
 
@@ -1390,16 +1464,52 @@ class DashboardDataAdapter(object):
         if timestamp_value is None:
             return 0.0
         if isinstance(timestamp_value, (int, float)):
-            return float(timestamp_value)
+            return _normalize_epoch_seconds(timestamp_value)
         text_value = str(timestamp_value).strip()
         if not text_value:
             return 0.0
+        try:
+            return _normalize_epoch_seconds(float(text_value))
+        except ValueError:
+            pass
         if text_value.endswith("Z"):
             text_value = text_value[:-1] + "+00:00"
         try:
-            return datetime.fromisoformat(text_value).timestamp()
+            parsed = datetime.fromisoformat(text_value)
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            return parsed.timestamp()
         except ValueError:
             return 0.0
+
+    @classmethod
+    def _normalize_timestamp_iso(cls, timestamp_value):
+        epoch_value = cls._timestamp_epoch(timestamp_value)
+        if epoch_value > 0.0:
+            return _utc_iso(epoch_value)
+        if timestamp_value is None:
+            return None
+        text_value = str(timestamp_value).strip()
+        return text_value or None
+
+    @classmethod
+    def _normalize_row_timestamps(cls, rows, field_names):
+        normalized_rows = []
+        for row in rows:
+            if not isinstance(row, dict):
+                normalized_rows.append(row)
+                continue
+            normalized_row = dict(row)
+            for field_name in field_names:
+                if field_name not in normalized_row:
+                    continue
+                normalized_value = cls._normalize_timestamp_iso(
+                    normalized_row.get(field_name)
+                )
+                if normalized_value:
+                    normalized_row[field_name] = normalized_value
+            normalized_rows.append(normalized_row)
+        return normalized_rows
 
     @staticmethod
     def _alert_row_id(
@@ -1681,6 +1791,7 @@ class DashboardDataAdapter(object):
                     "permit_icmp_external": False,
                     "default_allow_ipv4": True,
                     "blocked_source_ips": (),
+                    "protected_source_ips": ("10.0.0.254",),
                     "restricted_tcp_ports": (23,),
                     "restricted_udp_ports": (),
                     "dynamic_block_duration_seconds": 60,
@@ -1751,6 +1862,11 @@ class DashboardDataAdapter(object):
                     "mode": "threshold_only",
                     "mode_state_path": "runtime/ids_mode_state.json",
                     "hybrid_policy": "layered_consensus",
+                    "enable_random_forest": True,
+                    "enable_isolation_forest": True,
+                    "hybrid_block_enabled": True,
+                    "hybrid_anomaly_block_enabled": True,
+                    "require_threshold_for_ml_block": False,
                     "model_path": "models/random_forest_ids.joblib",
                     "anomaly_model_path": "",
                     "inference_mode": "classifier_only",
@@ -1822,6 +1938,9 @@ class DashboardDataAdapter(object):
                 "permit_icmp_external": firewall_config.permit_icmp_external,
                 "default_allow_ipv4": firewall_config.default_allow_ipv4,
                 "blocked_source_ips": list(firewall_config.blocked_source_ips),
+                "protected_source_ips": list(
+                    getattr(firewall_config, "protected_source_ips", ("10.0.0.254",))
+                ),
                 "restricted_tcp_ports": list(firewall_config.restricted_tcp_ports),
                 "restricted_udp_ports": list(firewall_config.restricted_udp_ports),
                 "dynamic_block_duration_seconds": firewall_config.dynamic_block_duration_seconds,
@@ -1944,6 +2063,31 @@ class DashboardDataAdapter(object):
                     "runtime/ids_mode_state.json",
                 ),
                 "hybrid_policy": getattr(ml_config, "hybrid_policy", "layered_consensus"),
+                "enable_random_forest": getattr(
+                    ml_config,
+                    "enable_random_forest",
+                    True,
+                ),
+                "enable_isolation_forest": getattr(
+                    ml_config,
+                    "enable_isolation_forest",
+                    True,
+                ),
+                "hybrid_block_enabled": getattr(
+                    ml_config,
+                    "hybrid_block_enabled",
+                    True,
+                ),
+                "hybrid_anomaly_block_enabled": getattr(
+                    ml_config,
+                    "hybrid_anomaly_block_enabled",
+                    True,
+                ),
+                "require_threshold_for_ml_block": getattr(
+                    ml_config,
+                    "require_threshold_for_ml_block",
+                    False,
+                ),
                 "model_path": getattr(
                     ml_config,
                     "model_path",

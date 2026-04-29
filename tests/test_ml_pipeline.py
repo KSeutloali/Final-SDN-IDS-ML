@@ -367,10 +367,10 @@ class MLPipelineTests(unittest.TestCase):
 
         self.assertIsNotNone(first_result.alert)
         self.assertTrue(first_result.alert.should_mitigate)
-        self.assertEqual(first_result.alert.decision, "hybrid_ml_block")
+        self.assertEqual(first_result.alert.decision, "full_hybrid_block")
         self.assertIsNotNone(second_result.alert)
         self.assertTrue(second_result.alert.should_mitigate)
-        self.assertEqual(second_result.alert.decision, "hybrid_ml_block")
+        self.assertEqual(second_result.alert.decision, "full_hybrid_block")
         self.assertEqual(
             second_result.alert.reason,
             "threshold_suspicion_elevated_by_strong_ml_evidence",
@@ -437,7 +437,121 @@ class MLPipelineTests(unittest.TestCase):
 
         self.assertIsNotNone(result.alert)
         self.assertFalse(result.alert.should_mitigate)
-        self.assertNotEqual(result.alert.decision, "hybrid_ml_block")
+        self.assertNotEqual(result.alert.decision, "full_hybrid_block")
+
+    def test_threshold_and_isolation_forest_signal_can_trigger_threshold_if_block(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            model_path = os.path.join(temp_dir, "rf.joblib")
+            anomaly_model_path = os.path.join(temp_dir, "anomaly.joblib")
+            save_model_bundle(
+                model_path,
+                {
+                    "model": FakeRandomForestModel(
+                        label="benign",
+                        malicious_probability=0.2,
+                    ),
+                    "feature_names": tuple(RUNTIME_FEATURE_NAMES),
+                    "positive_labels": ("malicious",),
+                    "metadata": {"model_name": "random_forest", "model_version": "1"},
+                },
+            )
+            self._write_anomaly_bundle(anomaly_model_path)
+            pipeline = MLIDSPipeline(
+                MLConfig(
+                    enabled=True,
+                    mode="hybrid",
+                    hybrid_policy="layered_consensus",
+                    model_path=model_path,
+                    anomaly_model_path=anomaly_model_path,
+                    inference_mode="combined",
+                    anomaly_score_threshold=0.6,
+                    hybrid_anomaly_support_threshold=0.6,
+                    minimum_packets_before_inference=1,
+                    inference_packet_stride=1,
+                    inference_cooldown_seconds=0.0,
+                    alert_suppression_seconds=0,
+                    hybrid_block_repeat_count=1,
+                )
+            )
+
+            result = pipeline.inspect(
+                PacketStub(timestamp=6.0, packet_length=120, dst_port=8443),
+                threshold_context=self._threshold_context(
+                    recon_suspicious=True,
+                    recon_suspicion_score=2,
+                    unanswered_syn_count=3,
+                    scan_unique_destination_ports=3,
+                ),
+            )
+
+        self.assertIsNotNone(result.alert)
+        self.assertTrue(result.alert.should_mitigate)
+        self.assertEqual(result.alert.decision, "threshold_if_block")
+        self.assertEqual(result.alert.details["final_action"], "quarantine")
+        self.assertEqual(result.alert.alert_type, "hybrid_threshold_if_detected")
+
+    def test_rf_if_consensus_can_block_without_threshold_signal_when_repeated(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            model_path = os.path.join(temp_dir, "rf.joblib")
+            anomaly_model_path = os.path.join(temp_dir, "anomaly.joblib")
+            save_model_bundle(
+                model_path,
+                {
+                    "model": FakeRandomForestModel(
+                        label="malicious",
+                        malicious_probability=0.93,
+                    ),
+                    "feature_names": tuple(RUNTIME_FEATURE_NAMES),
+                    "positive_labels": ("malicious",),
+                    "metadata": {"model_name": "random_forest", "model_version": "1"},
+                },
+            )
+            self._write_anomaly_bundle(anomaly_model_path)
+            pipeline = MLIDSPipeline(
+                MLConfig(
+                    enabled=True,
+                    mode="hybrid",
+                    hybrid_policy="layered_consensus",
+                    model_path=model_path,
+                    anomaly_model_path=anomaly_model_path,
+                    inference_mode="combined",
+                    anomaly_score_threshold=0.6,
+                    hybrid_anomaly_support_threshold=0.6,
+                    minimum_packets_before_inference=1,
+                    inference_packet_stride=1,
+                    inference_cooldown_seconds=0.0,
+                    alert_suppression_seconds=0,
+                    hybrid_block_repeat_count=2,
+                )
+            )
+
+            with patch.object(
+                pipeline,
+                "_record_decision_window",
+                return_value={
+                    "signal_window_count": 2,
+                    "threshold_suspicious_repeat_count": 0,
+                    "threshold_near_miss_count": 0,
+                    "anomaly_only_repeat_count": 0,
+                    "anomalous_window_count": 2,
+                    "anomaly_trend_delta": 0.1,
+                    "anomaly_trend_rising": True,
+                },
+            ):
+                result = pipeline.inspect(
+                    PacketStub(timestamp=7.0, packet_length=120, dst_port=9443),
+                    threshold_context=self._threshold_context(
+                        recon_suspicious=False,
+                        recon_visible_traffic=False,
+                        forwarding_visibility="fast_path",
+                    ),
+                )
+
+        self.assertIsNotNone(result.alert)
+        self.assertTrue(result.alert.should_mitigate)
+        self.assertEqual(result.alert.decision, "rf_if_consensus_block")
+        self.assertEqual(result.alert.details["final_action"], "quarantine")
+        self.assertEqual(result.alert.alert_type, "hybrid_rf_if_detected")
 
     def test_layered_consensus_keeps_threshold_triggered_cases_threshold_owned(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -539,10 +653,10 @@ class MLPipelineTests(unittest.TestCase):
         self.assertEqual(first_result.alert.details["predicted_family"], "tcp_scan")
         self.assertIsNotNone(second_result.alert)
         self.assertTrue(second_result.alert.should_mitigate)
-        self.assertEqual(second_result.alert.decision, "hybrid_ml_block")
+        self.assertEqual(second_result.alert.decision, "rf_if_consensus_block")
         self.assertEqual(
             second_result.alert.reason,
-            "known_family_prediction_supported_by_context",
+            "known_family_prediction_supported_by_anomaly_context",
         )
         self.assertIn(
             "known_malicious_family",
@@ -601,7 +715,7 @@ class MLPipelineTests(unittest.TestCase):
         self.assertFalse(first_result.alert.should_mitigate)
         self.assertIsNotNone(second_result.alert)
         self.assertTrue(second_result.alert.should_mitigate)
-        self.assertEqual(second_result.alert.decision, "hybrid_ml_block")
+        self.assertEqual(second_result.alert.decision, "threshold_rf_block")
         self.assertEqual(second_result.alert.details["repeated_window_count"], 2)
         self.assertEqual(
             second_result.alert.details["final_block_reason"],
@@ -667,14 +781,14 @@ class MLPipelineTests(unittest.TestCase):
 
         self.assertIsNotNone(result.alert)
         self.assertTrue(result.alert.should_mitigate)
-        self.assertEqual(result.alert.decision, "hybrid_ml_block")
+        self.assertEqual(result.alert.decision, "threshold_if_block")
         self.assertEqual(
             result.alert.reason,
-            "repeated_high_anomaly_pattern_supported_by_threshold_near_misses",
+            "threshold_suspicion_elevated_by_anomaly_evidence",
         )
         self.assertEqual(
             result.alert.details["block_decision_path"],
-            "anomaly_only_narrow_escalation",
+            "threshold_suspicion_elevated_by_if",
         )
         self.assertIn(
             "repeated_anomaly_only_windows",
@@ -741,7 +855,7 @@ class MLPipelineTests(unittest.TestCase):
 
         self.assertIsNotNone(result.alert)
         self.assertTrue(result.alert.should_mitigate)
-        self.assertEqual(result.alert.decision, "hybrid_ml_block")
+        self.assertEqual(result.alert.decision, "anomaly_only_block")
         self.assertEqual(
             result.alert.reason,
             "repeated_high_anomaly_pattern_without_threshold_signal",
@@ -1046,7 +1160,7 @@ class MLPipelineTests(unittest.TestCase):
         self.assertFalse(first_result.alert.should_mitigate)
         self.assertIsNotNone(second_result.alert)
         self.assertTrue(second_result.alert.should_mitigate)
-        self.assertEqual(second_result.alert.decision, "hybrid_ml_block")
+        self.assertEqual(second_result.alert.decision, "rf_if_consensus_block")
         self.assertEqual(
             second_result.alert.reason,
             "repeated_classifier_anomaly_consensus_supported_by_threshold_near_misses",
@@ -1233,6 +1347,96 @@ class MLPipelineTests(unittest.TestCase):
         self.assertFalse(result.alert.should_mitigate)
         self.assertEqual(result.alert.details["correlation_status"], "anomaly_only")
         self.assertEqual(result.alert.decision, "anomaly_only_alert")
+
+    def test_benign_traffic_does_not_emit_ml_alert(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            model_path = os.path.join(temp_dir, "rf.joblib")
+            save_model_bundle(
+                model_path,
+                {
+                    "model": FakeRandomForestModel(
+                        label="benign",
+                        malicious_probability=0.1,
+                    ),
+                    "feature_names": tuple(RUNTIME_FEATURE_NAMES),
+                    "positive_labels": ("malicious",),
+                    "metadata": {"model_name": "random_forest", "model_version": "1"},
+                },
+            )
+            pipeline = MLIDSPipeline(
+                MLConfig(
+                    enabled=True,
+                    mode="hybrid",
+                    hybrid_policy="layered_consensus",
+                    model_path=model_path,
+                    minimum_packets_before_inference=1,
+                    inference_packet_stride=1,
+                    inference_cooldown_seconds=0.0,
+                    alert_only_threshold=0.55,
+                    alert_suppression_seconds=0,
+                )
+            )
+
+            result = pipeline.inspect(
+                PacketStub(timestamp=8.0, packet_length=80, tcp_syn_only=False)
+            )
+
+        self.assertIsNone(result.alert)
+
+    def test_safety_exclusion_suppresses_block_action_for_protected_source_ip(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            model_path = os.path.join(temp_dir, "rf.joblib")
+            anomaly_model_path = os.path.join(temp_dir, "anomaly.joblib")
+            save_model_bundle(
+                model_path,
+                {
+                    "model": FakeRandomForestModel(
+                        label="malicious",
+                        malicious_probability=0.93,
+                    ),
+                    "feature_names": tuple(RUNTIME_FEATURE_NAMES),
+                    "positive_labels": ("malicious",),
+                    "metadata": {"model_name": "random_forest", "model_version": "1"},
+                },
+            )
+            self._write_anomaly_bundle(anomaly_model_path)
+            pipeline = MLIDSPipeline(
+                MLConfig(
+                    enabled=True,
+                    mode="hybrid",
+                    hybrid_policy="layered_consensus",
+                    model_path=model_path,
+                    anomaly_model_path=anomaly_model_path,
+                    inference_mode="combined",
+                    minimum_packets_before_inference=1,
+                    inference_packet_stride=1,
+                    inference_cooldown_seconds=0.0,
+                    alert_suppression_seconds=0,
+                    hybrid_block_repeat_count=1,
+                )
+            )
+
+            result = pipeline.inspect(
+                PacketStub(
+                    timestamp=9.0,
+                    src_ip="255.255.255.255",
+                    packet_length=120,
+                    dst_port=22,
+                ),
+                threshold_context=self._threshold_context(
+                    recon_suspicious=True,
+                    recon_suspicion_score=2,
+                ),
+            )
+
+        self.assertIsNotNone(result.alert)
+        self.assertFalse(result.alert.should_mitigate)
+        self.assertEqual(result.alert.details["final_action"], "alert_only")
+        self.assertTrue(result.alert.details["block_suppressed"])
+        self.assertEqual(
+            result.alert.details["block_suppression_reason"],
+            "broadcast_source_ip",
+        )
 
     def test_threshold_only_and_ml_only_correlations_expire_cleanly(self):
         pipeline = MLIDSPipeline(

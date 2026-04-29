@@ -15,6 +15,7 @@ class ConfigLoadingTests(unittest.TestCase):
             self.assertTrue(config.firewall.allow_arp)
             self.assertTrue(config.firewall.permit_icmp)
             self.assertEqual(config.firewall.restricted_tcp_ports, (23,))
+            self.assertEqual(config.firewall.protected_source_ips, ("10.0.0.254",))
             self.assertTrue(config.ids.enabled)
             self.assertTrue(config.ids.inspect_tcp_udp_packets)
             self.assertTrue(config.ids.keep_tcp_syn_packets_visible)
@@ -55,6 +56,11 @@ class ConfigLoadingTests(unittest.TestCase):
             self.assertEqual(config.ml.mode, "threshold_only")
             self.assertEqual(config.ml.mode_state_path, "runtime/ids_mode_state.json")
             self.assertEqual(config.ml.hybrid_policy, "layered_consensus")
+            self.assertTrue(config.ml.enable_random_forest)
+            self.assertTrue(config.ml.enable_isolation_forest)
+            self.assertTrue(config.ml.hybrid_block_enabled)
+            self.assertTrue(config.ml.hybrid_anomaly_block_enabled)
+            self.assertFalse(config.ml.require_threshold_for_ml_block)
             self.assertEqual(
                 config.ml.model_path,
                 "models/random_forest_runtime_final.joblib",
@@ -107,6 +113,7 @@ class ConfigLoadingTests(unittest.TestCase):
             os.environ,
             {
                 "SDN_FIREWALL_BLOCKED_SOURCE_IPS": "10.0.0.3,10.0.0.4",
+                "SDN_FIREWALL_PROTECTED_SOURCE_IPS": "10.0.0.254,10.0.0.253",
                 "SDN_FIREWALL_RESTRICTED_TCP_PORTS": "23,445",
                 "SDN_FIREWALL_DYNAMIC_BLOCK_SECONDS": "120",
                 "SDN_FLOW_PACKET_BLOCK_SECONDS": "15",
@@ -145,6 +152,11 @@ class ConfigLoadingTests(unittest.TestCase):
                 "SDN_ML_ENABLED": "true",
                 "SDN_IDS_MODE": "ml",
                 "SDN_ML_HYBRID_POLICY": "high_confidence_block",
+                "SDN_ML_ENABLE_RANDOM_FOREST": "false",
+                "SDN_ML_ENABLE_ISOLATION_FOREST": "true",
+                "SDN_ML_HYBRID_BLOCK_ENABLED": "false",
+                "SDN_ML_HYBRID_ANOMALY_BLOCK_ENABLED": "false",
+                "SDN_ML_REQUIRE_THRESHOLD_FOR_ML_BLOCK": "true",
                 "SDN_IDS_MODE_STATE_PATH": "runtime/custom-ids-mode.json",
                 "SDN_ML_MODEL_PATH": "models/demo.joblib",
                 "SDN_ML_ANOMALY_MODEL_PATH": "models/anomaly.joblib",
@@ -190,6 +202,10 @@ class ConfigLoadingTests(unittest.TestCase):
                 config.firewall.blocked_source_ips,
                 ("10.0.0.3", "10.0.0.4"),
             )
+            self.assertEqual(
+                config.firewall.protected_source_ips,
+                ("10.0.0.254", "10.0.0.253"),
+            )
             self.assertEqual(config.firewall.restricted_tcp_ports, (23, 445))
             self.assertEqual(config.firewall.dynamic_block_duration_seconds, 120)
             self.assertEqual(config.flow_timeouts.packet_block_seconds, 15)
@@ -229,6 +245,11 @@ class ConfigLoadingTests(unittest.TestCase):
             self.assertEqual(config.ml.mode, "ml_only")
             self.assertEqual(config.ml.mode_state_path, "runtime/custom-ids-mode.json")
             self.assertEqual(config.ml.hybrid_policy, "high_confidence_block")
+            self.assertFalse(config.ml.enable_random_forest)
+            self.assertTrue(config.ml.enable_isolation_forest)
+            self.assertFalse(config.ml.hybrid_block_enabled)
+            self.assertFalse(config.ml.hybrid_anomaly_block_enabled)
+            self.assertTrue(config.ml.require_threshold_for_ml_block)
             self.assertEqual(config.ml.model_path, "models/demo.joblib")
             self.assertEqual(config.ml.anomaly_model_path, "models/anomaly.joblib")
             self.assertEqual(config.ml.inference_mode, "combined")

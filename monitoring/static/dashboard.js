@@ -4,6 +4,15 @@
   const SIDEBAR_STORAGE_KEY = "sdn-dashboard-sidebar-collapsed";
   const SIDEBAR_MOBILE_MEDIA_QUERY = "(max-width: 960px)";
   const CAPTURE_PAGE_SIZE = 5;
+  const ALERT_TABLE_WIDTHS_STORAGE_KEY = "sdn-dashboard-alert-table-widths";
+  const ALERT_SNAPSHOTS_TABLE_WIDTHS_STORAGE_KEY = "alertSnapshotsTableColumnWidths";
+  const RING_BUFFER_TABLE_WIDTHS_STORAGE_KEY = "ringBufferTableColumnWidths";
+  const ALERT_TABLE_MIN_WIDTHS = [120, 110, 130, 120, 130, 220, 120, 120];
+  const ALERT_TABLE_DEFAULT_WIDTHS = [140, 120, 170, 150, 170, 420, 150, 140];
+  const ALERT_SNAPSHOTS_TABLE_MIN_WIDTHS = [44, 260, 200, 140, 130, 220, 76, 110, 150, 130];
+  const ALERT_SNAPSHOTS_TABLE_DEFAULT_WIDTHS = [44, 360, 230, 160, 150, 280, 90, 120, 170, 150];
+  const RING_BUFFER_TABLE_MIN_WIDTHS = [44, 150, 180, 130, 320, 130, 100, 130, 130];
+  const RING_BUFFER_TABLE_DEFAULT_WIDTHS = [44, 180, 220, 140, 420, 150, 120, 160, 150];
   const TOKEN_ACRONYMS = {
     ids: "IDS",
     ip: "IP",
@@ -50,6 +59,7 @@
     ensureSidebarToggle();
     initializeSidebar();
     initializeCaptureScrollbars();
+    initializeResizableTables();
     markSidebarReady();
     document.addEventListener("click", handleActionClick);
     document.addEventListener("change", handleActionChange);
@@ -651,7 +661,7 @@
             "<td>" + escapeHtml(row.src_ip || "-") + "</td>" +
             "<td>" + escapeHtml(formatDisplayValue(row.detector || "-")) + "</td>" +
             "<td class=\"table-wrap\">" + escapeHtml(row.reason || "-") + "</td>" +
-            "<td>" + escapeHtml(row.created_at || "-") + "</td>" +
+            "<td>" + escapeHtml(shortTimestamp(row.created_at || row.created_at_epoch || "-")) + "</td>" +
           "</tr>";
         }).join("")
       : emptyRow(4, "No active quarantines.");
@@ -670,7 +680,7 @@
             "<td>" + escapeHtml(formatDisplayValue(row.detector || "-")) + "</td>" +
             "<td>" + escapeHtml(formatDisplayValue(row.alert_type || "-")) + "</td>" +
             "<td class=\"table-wrap\">" + escapeHtml(row.reason || "-") + "</td>" +
-            "<td>" + escapeHtml(row.created_at || "-") + "</td>" +
+            "<td>" + escapeHtml(shortTimestamp(row.created_at || row.created_at_epoch || "-")) + "</td>" +
             "<td>" + renderCaptureLink(row.related_capture) + "</td>" +
             "<td><button class=\"table-button js-unblock-host\" data-src-ip=\"" +
               escapeAttribute(row.src_ip || "") +
@@ -750,11 +760,11 @@
             : "<span class=\"badge badge--neutral\">" + escapeHtml(row.status || "stored") + "</span>";
           return "<tr>" +
             "<td class=\"table-select-cell\">" + renderCaptureSelectionCell("snapshot", row.snapshot_key || row.snapshot_name, row.snapshot_name) + "</td>" +
-            "<td>" + renderEllipsisText(row.snapshot_name || "-", 42) + "</td>" +
-            "<td>" + renderEllipsisText(formatCaptureTimestamp(row.timestamp), 19, row.timestamp || "-") + "</td>" +
-            "<td>" + renderEllipsisText(row.source_ip || "-", 16) + "</td>" +
-            "<td>" + renderEllipsisText(formatDisplayValue(row.detector), 14, row.detector || "-") + "</td>" +
-            "<td>" + renderEllipsisText(formatDisplayValue(row.alert_type), 24, row.alert_type || "-") + "</td>" +
+            "<td>" + renderEllipsisText(row.snapshot_name || "-", 120) + "</td>" +
+            "<td>" + renderEllipsisText(formatCaptureTimestamp(row.timestamp), 32, row.timestamp || "-") + "</td>" +
+            "<td>" + renderEllipsisText(row.source_ip || "-", 28) + "</td>" +
+            "<td>" + renderEllipsisText(formatDisplayValue(row.detector), 28, row.detector || "-") + "</td>" +
+            "<td>" + renderEllipsisText(formatDisplayValue(row.alert_type), 90, row.alert_type || "-") + "</td>" +
             "<td>" + formatNumber(row.file_count || 0) + "</td>" +
             "<td>" + escapeHtml(row.size_human || "0 B") + "</td>" +
             "<td>" + statusBadge + "</td>" +
@@ -780,11 +790,11 @@
             : "-";
           return "<tr>" +
             "<td class=\"table-select-cell\">" + renderCaptureSelectionCell("file", row.relative_path, row.file_name) + "</td>" +
-            "<td>" + renderEllipsisText(formatDisplayValue(row.session_name), 18, row.session_name || "-") + "</td>" +
-            "<td>" + renderEllipsisText(formatDisplayValue(row.scenario), 24, row.scenario || "-") + "</td>" +
-            "<td>" + escapeHtml(row.interface || "-") + "</td>" +
-            "<td>" + renderEllipsisText(row.file_name || "-", 40) + "</td>" +
-            "<td>" + renderEllipsisText(formatDisplayValue(row.status), 14, row.status || "-") + "</td>" +
+            "<td>" + renderEllipsisText(formatDisplayValue(row.session_name), 28, row.session_name || "-") + "</td>" +
+            "<td>" + renderEllipsisText(formatDisplayValue(row.scenario), 44, row.scenario || "-") + "</td>" +
+            "<td>" + renderEllipsisText(row.interface || "-", 24, row.interface || "-") + "</td>" +
+            "<td>" + renderEllipsisText(row.file_name || "-", 140) + "</td>" +
+            "<td>" + renderEllipsisText(formatDisplayValue(row.status), 28, row.status || "-") + "</td>" +
             "<td>" + escapeHtml(row.size_human || "0 B") + "</td>" +
             "<td>" + escapeHtml(shortTimestamp(row.modified_at || row.timestamp || "-")) + "</td>" +
             "<td>" + downloadCell + "</td>" +
@@ -1897,8 +1907,8 @@
     }
 
     try {
-      const date = new Date(value);
-      if (Number.isNaN(date.getTime())) {
+      const date = parseTimestampValue(value);
+      if (!date) {
         return String(value);
       }
       return [
@@ -1917,13 +1927,209 @@
 
   function shortTimestamp(value) {
     try {
-      const date = new Date(value);
-      if (Number.isNaN(date.getTime())) {
+      const date = parseTimestampValue(value);
+      if (!date) {
         return value;
       }
-      return date.toLocaleTimeString();
+      return date.toLocaleTimeString([], {
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit",
+        hour12: false,
+      });
     } catch (error) {
       return value;
+    }
+  }
+
+  function parseTimestampValue(value) {
+    if (value === null || value === undefined || value === "") {
+      return null;
+    }
+
+    if (typeof value === "number" && Number.isFinite(value)) {
+      const epochMs = value >= 1e12 ? value : value * 1000;
+      const fromNumber = new Date(epochMs);
+      return Number.isNaN(fromNumber.getTime()) ? null : fromNumber;
+    }
+
+    const textValue = String(value).trim();
+    if (!textValue) {
+      return null;
+    }
+
+    if (/^-?\d+(\.\d+)?$/.test(textValue)) {
+      const numericValue = Number(textValue);
+      if (Number.isFinite(numericValue)) {
+        const epochMs = numericValue >= 1e12 ? numericValue : numericValue * 1000;
+        const fromNumericText = new Date(epochMs);
+        return Number.isNaN(fromNumericText.getTime()) ? null : fromNumericText;
+      }
+    }
+
+    const fromText = new Date(textValue);
+    return Number.isNaN(fromText.getTime()) ? null : fromText;
+  }
+
+  function initializeResizableTables() {
+    [
+      {
+        selector: ".js-resizable-alerts-table",
+        storageKey: ALERT_TABLE_WIDTHS_STORAGE_KEY,
+        minWidths: ALERT_TABLE_MIN_WIDTHS,
+        defaultWidths: ALERT_TABLE_DEFAULT_WIDTHS,
+      },
+      {
+        selector: ".js-resizable-snapshots-table",
+        storageKey: ALERT_SNAPSHOTS_TABLE_WIDTHS_STORAGE_KEY,
+        minWidths: ALERT_SNAPSHOTS_TABLE_MIN_WIDTHS,
+        defaultWidths: ALERT_SNAPSHOTS_TABLE_DEFAULT_WIDTHS,
+        lockedColumns: [0],
+      },
+      {
+        selector: ".js-resizable-ring-buffer-table",
+        storageKey: RING_BUFFER_TABLE_WIDTHS_STORAGE_KEY,
+        minWidths: RING_BUFFER_TABLE_MIN_WIDTHS,
+        defaultWidths: RING_BUFFER_TABLE_DEFAULT_WIDTHS,
+        lockedColumns: [0],
+      },
+    ].forEach(function (config) {
+      initializeResizableTable(config);
+    });
+  }
+
+  function initializeResizableTable(config) {
+    const table = document.querySelector(config.selector);
+    if (!table || table.dataset.resizableInitialized === "true") {
+      return;
+    }
+
+    const columnGroup = table.querySelector("colgroup");
+    const tableHead = table.tHead;
+    if (!columnGroup || !tableHead || !tableHead.rows.length) {
+      return;
+    }
+
+    const columns = Array.from(columnGroup.querySelectorAll("col"));
+    const headerCells = Array.from(tableHead.rows[0].cells);
+    if (!columns.length || columns.length !== headerCells.length) {
+      return;
+    }
+
+    applyStoredColumnWidths(columns, config);
+    table.dataset.resizableInitialized = "true";
+
+    headerCells.forEach(function (headerCell, index) {
+      if ((config.lockedColumns || []).indexOf(index) >= 0) {
+        headerCell.classList.add("is-resize-locked");
+        return;
+      }
+      if (headerCell.querySelector(".table-column-resizer")) {
+        return;
+      }
+
+      headerCell.classList.add("is-resizable");
+      const handle = document.createElement("span");
+      handle.className = "table-column-resizer";
+      handle.setAttribute("role", "separator");
+      handle.setAttribute("aria-orientation", "vertical");
+      handle.setAttribute("tabindex", "0");
+      handle.setAttribute("title", "Drag to resize column");
+      handle.addEventListener("pointerdown", function (event) {
+        if (event.button !== 0) {
+          return;
+        }
+        event.preventDefault();
+        beginColumnResize(event, table, columns, index, config);
+      });
+      handle.addEventListener("keydown", function (event) {
+        if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") {
+          return;
+        }
+        event.preventDefault();
+        const delta = event.key === "ArrowRight" ? 16 : -16;
+        nudgeColumnWidth(columns, index, delta, config);
+      });
+      headerCell.appendChild(handle);
+    });
+  }
+
+  function applyStoredColumnWidths(columns, config) {
+    let storedWidths = null;
+    try {
+      storedWidths = JSON.parse(window.localStorage.getItem(config.storageKey) || "null");
+    } catch (error) {
+      storedWidths = null;
+    }
+
+    columns.forEach(function (column, index) {
+      const minimumWidth = (config.minWidths && config.minWidths[index]) || 110;
+      const fallbackWidth = (config.defaultWidths && config.defaultWidths[index]) || minimumWidth;
+      const widthValue = Array.isArray(storedWidths)
+        ? Number(storedWidths[index])
+        : NaN;
+      const resolvedWidth = Number.isFinite(widthValue)
+        ? Math.max(minimumWidth, widthValue)
+        : fallbackWidth;
+      column.style.width = resolvedWidth + "px";
+      column.style.minWidth = minimumWidth + "px";
+    });
+  }
+
+  function beginColumnResize(pointerEvent, table, columns, columnIndex, config) {
+    const column = columns[columnIndex];
+    if (!column) {
+      return;
+    }
+
+    const startingWidth = column.getBoundingClientRect().width;
+    const minimumWidth = (config.minWidths && config.minWidths[columnIndex]) || 110;
+    const startX = pointerEvent.clientX;
+    table.classList.add("is-resizing-columns");
+
+    const onPointerMove = function (moveEvent) {
+      const delta = moveEvent.clientX - startX;
+      const nextWidth = Math.max(minimumWidth, Math.round(startingWidth + delta));
+      column.style.width = nextWidth + "px";
+    };
+
+    const onPointerUp = function () {
+      table.classList.remove("is-resizing-columns");
+      window.removeEventListener("pointermove", onPointerMove);
+      window.removeEventListener("pointerup", onPointerUp);
+      persistColumnWidths(columns, config);
+    };
+
+    window.addEventListener("pointermove", onPointerMove);
+    window.addEventListener("pointerup", onPointerUp);
+  }
+
+  function nudgeColumnWidth(columns, columnIndex, delta, config) {
+    const column = columns[columnIndex];
+    if (!column) {
+      return;
+    }
+
+    const minimumWidth = (config.minWidths && config.minWidths[columnIndex]) || 110;
+    const currentWidth = column.getBoundingClientRect().width;
+    const nextWidth = Math.max(minimumWidth, Math.round(currentWidth + delta));
+    column.style.width = nextWidth + "px";
+    persistColumnWidths(columns, config);
+  }
+
+  function persistColumnWidths(columns, config) {
+    const widths = columns.map(function (column, index) {
+      const minimumWidth = (config.minWidths && config.minWidths[index]) || 110;
+      return Math.max(minimumWidth, Math.round(column.getBoundingClientRect().width));
+    });
+
+    try {
+      window.localStorage.setItem(
+        config.storageKey,
+        JSON.stringify(widths)
+      );
+    } catch (error) {
+      // Ignore storage failures and keep runtime widths only.
     }
   }
 

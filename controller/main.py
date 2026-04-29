@@ -206,6 +206,17 @@ class SecurityController(app_manager.RyuApp):
             alerts=threshold_alerts,
             forwarding_visibility=forwarding_visibility,
         )
+        threshold_context.update(
+            {
+                "src_mac": getattr(packet_metadata, "eth_src", "") or "",
+                "dst_mac": getattr(packet_metadata, "eth_dst", "") or "",
+                "dst_ip": getattr(packet_metadata, "dst_ip", "") or "",
+                "internal_subnet": getattr(self.config.firewall, "internal_subnet", ""),
+                "protected_source_ips": list(
+                    getattr(self.config.firewall, "protected_source_ips", ())
+                ),
+            }
+        )
         ml_result = self.ml_pipeline.inspect(
             packet_metadata,
             threshold_alerts=threshold_alerts,
@@ -433,6 +444,10 @@ class SecurityController(app_manager.RyuApp):
             repeated_window_count=alert.details.get("repeated_window_count"),
             block_decision_path=alert.details.get("block_decision_path"),
             final_block_reason=alert.details.get("final_block_reason"),
+            final_action=alert.details.get("final_action"),
+            detection_sources=",".join(alert.details.get("detection_sources", [])),
+            block_suppressed=alert.details.get("block_suppressed"),
+            block_suppression_reason=alert.details.get("block_suppression_reason"),
             related_capture=(
                 snapshot.get("primary_file")
                 if snapshot is not None
@@ -556,6 +571,7 @@ class SecurityController(app_manager.RyuApp):
                 )
                 self.event_logger.security_event(
                     "topology_idle_quarantine_reset",
+                    src_ip="controller",
                     released_hosts_count=len(released_sources),
                     released_hosts=",".join(released_sources),
                     reason="auto_unblock_enabled",
@@ -806,6 +822,7 @@ class SecurityController(app_manager.RyuApp):
                 "permit_icmp_external": self.config.firewall.permit_icmp_external,
                 "default_allow_ipv4": self.config.firewall.default_allow_ipv4,
                 "blocked_source_ips": list(self.config.firewall.blocked_source_ips),
+                "protected_source_ips": list(self.config.firewall.protected_source_ips),
                 "restricted_tcp_ports": list(self.config.firewall.restricted_tcp_ports),
                 "restricted_udp_ports": list(self.config.firewall.restricted_udp_ports),
                 "dynamic_block_duration_seconds": self.config.firewall.dynamic_block_duration_seconds,
@@ -878,6 +895,11 @@ class SecurityController(app_manager.RyuApp):
                 "mode": self.config.ml.mode,
                 "mode_state_path": self.config.ml.mode_state_path,
                 "hybrid_policy": self.config.ml.hybrid_policy,
+                "enable_random_forest": self.config.ml.enable_random_forest,
+                "enable_isolation_forest": self.config.ml.enable_isolation_forest,
+                "hybrid_block_enabled": self.config.ml.hybrid_block_enabled,
+                "hybrid_anomaly_block_enabled": self.config.ml.hybrid_anomaly_block_enabled,
+                "require_threshold_for_ml_block": self.config.ml.require_threshold_for_ml_block,
                 "model_path": self.config.ml.model_path,
                 "anomaly_model_path": self.config.ml.anomaly_model_path,
                 "inference_mode": self.config.ml.inference_mode,

@@ -69,6 +69,12 @@ class ModelInferenceEngine(object):
             load_error="anomaly_model_not_configured"
         )
         self.anomaly_engine = AnomalyInferenceEngine(self.anomaly_bundle)
+        self.random_forest_enabled = bool(
+            getattr(self.ml_config, "enable_random_forest", True)
+        )
+        self.isolation_forest_enabled = bool(
+            getattr(self.ml_config, "enable_isolation_forest", True)
+        )
         self.positive_labels = set(
             value.strip().lower()
             for value in (self.model_bundle.positive_labels or ml_config.positive_labels)
@@ -86,8 +92,12 @@ class ModelInferenceEngine(object):
 
     @property
     def effective_mode(self):
-        classifier_available = self.model_bundle.is_available
-        anomaly_available = self.anomaly_bundle.is_available
+        classifier_available = (
+            self.random_forest_enabled and self.model_bundle.is_available
+        )
+        anomaly_available = (
+            self.isolation_forest_enabled and self.anomaly_bundle.is_available
+        )
 
         if self.mode == "classifier_only":
             return "classifier_only" if classifier_available else "unavailable"
@@ -115,7 +125,7 @@ class ModelInferenceEngine(object):
         return None
 
     def _predict_classifier(self, feature_snapshot):
-        if not self.model_bundle.is_available:
+        if not self.random_forest_enabled or not self.model_bundle.is_available:
             return None
 
         feature_vector = feature_snapshot.to_vector(self.model_bundle.feature_names)
@@ -172,6 +182,8 @@ class ModelInferenceEngine(object):
         )
 
     def _predict_anomaly_only(self, feature_snapshot):
+        if not self.isolation_forest_enabled:
+            return None
         anomaly_prediction = self.anomaly_engine.predict(feature_snapshot)
         if anomaly_prediction is None:
             return None
@@ -302,8 +314,12 @@ class ModelInferenceEngine(object):
         return 0.0
 
     def _default_mode(self):
-        classifier_available = self.model_bundle.is_available
-        anomaly_available = self.anomaly_bundle.is_available
+        classifier_available = (
+            self.random_forest_enabled and self.model_bundle.is_available
+        )
+        anomaly_available = (
+            self.isolation_forest_enabled and self.anomaly_bundle.is_available
+        )
         if classifier_available and anomaly_available:
             return "combined"
         if anomaly_available and not classifier_available:

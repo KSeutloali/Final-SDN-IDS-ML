@@ -1,6 +1,7 @@
 """Quarantine-oriented IDS response actions built on top of firewall block flows."""
 
 from dataclasses import dataclass
+import ipaddress
 
 
 @dataclass
@@ -71,6 +72,17 @@ class MitigationService(object):
         """Convert one IDS alert into an indefinite quarantine action."""
 
         if alert is None or not alert.src_ip:
+            return None
+
+        eligible, suppression_reason = self._is_quarantine_eligible(alert.src_ip)
+        if not eligible:
+            self.event_logger.security_event(
+                "mitigation_suppressed",
+                src_ip=alert.src_ip,
+                reason=suppression_reason,
+                alert_type=getattr(alert, "alert_type", ""),
+                detector=getattr(alert, "detector", "threshold"),
+            )
             return None
 
         detector = getattr(alert, "detector", "threshold")
@@ -162,3 +174,41 @@ class MitigationService(object):
         """Compatibility shim: indefinite quarantine means there are no expirations."""
 
         return []
+
+    def _is_quarantine_eligible(self, src_ip):
+        address = str(src_ip or "").strip()
+        if not address:
+            return False, "missing_source_ip"
+
+        try:
+            parsed_ip = ipaddress.ip_address(address)
+        except ValueError:
+            return False, "invalid_source_ip"
+
+        if parsed_ip.is_unspecified or parsed_ip.is_multicast:
+            return False, "special_use_source_ip"
+        if parsed_ip.is_loopback or parsed_ip == ipaddress.ip_address("255.255.255.255"):
+            return False, "controller_or_broadcast_source_ip"
+
+        firewall_config = getattr(self.firewall, "firewall_config", None)
+        if firewall_config is not None:
+            protected_ips = set(
+                str(value).strip()
+                for value in getattr(firewall_config, "protected_source_ips", ())
+                if str(value).strip()
+            )
+            if address in protected_ips:
+                return False, "protected_source_ip"
+
+            internal_subnet = str(getattr(firewall_config, "internal_subnet", "") or "").strip()
+            if internal_subnet:
+                try:
+                    internal_network = ipaddress.ip_network(internal_subnet, strict=False)
+                except ValueError:
+                    internal_network = None
+                if internal_network is not None:
+                    if parsed_ip == internal_network.network_address:
+                        return False, "network_address_source_ip"
+                    if parsed_ip == internal_network.broadcast_address:
+                        return False, "broadcast_source_ip"
+        return True, ""
