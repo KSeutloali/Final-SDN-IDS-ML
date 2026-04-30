@@ -659,7 +659,7 @@
       ? subset.map(function (row) {
           return "<tr>" +
             "<td>" + escapeHtml(row.src_ip || "-") + "</td>" +
-            "<td>" + escapeHtml(formatDisplayValue(row.detector || "-")) + "</td>" +
+            "<td>" + escapeHtml(formatDisplayValue(row.detector_display || row.detector || "-")) + "</td>" +
             "<td class=\"table-wrap\">" + escapeHtml(row.reason || "-") + "</td>" +
             "<td>" + escapeHtml(shortTimestamp(row.created_at || row.created_at_epoch || "-")) + "</td>" +
           "</tr>";
@@ -677,7 +677,7 @@
       ? rows.map(function (row) {
           return "<tr>" +
             "<td>" + escapeHtml(row.src_ip || "-") + "</td>" +
-            "<td>" + escapeHtml(formatDisplayValue(row.detector || "-")) + "</td>" +
+            "<td>" + escapeHtml(formatDisplayValue(row.detector_display || row.detector || "-")) + "</td>" +
             "<td>" + escapeHtml(formatDisplayValue(row.alert_type || "-")) + "</td>" +
             "<td class=\"table-wrap\">" + escapeHtml(row.reason || "-") + "</td>" +
             "<td>" + escapeHtml(shortTimestamp(row.created_at || row.created_at_epoch || "-")) + "</td>" +

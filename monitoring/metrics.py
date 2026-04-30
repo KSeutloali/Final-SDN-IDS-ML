@@ -70,6 +70,7 @@ class MetricsStore(object):
         self.recent_ml_predictions = deque(maxlen=max_recent_events)
         self.recent_hybrid_events = deque(maxlen=max_recent_events)
         self.latest_capture_snapshot = None
+        self._event_sequence = 0
         self.started_at = time.time()
 
     def record_packet(self, packet_metadata):
@@ -149,6 +150,7 @@ class MetricsStore(object):
             self.ml_only_detections_total += 1
 
         event = {
+            "event_id": self._next_event_id(),
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "category": "hybrid_correlation",
             "src_ip": correlation_event.src_ip,
@@ -294,6 +296,7 @@ class MetricsStore(object):
             self.ml_benign_predictions_total += 1
 
         event = {
+            "event_id": self._next_event_id(),
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "src_ip": prediction.src_ip,
             "label": prediction.label,
@@ -320,7 +323,12 @@ class MetricsStore(object):
         self.recent_ml_predictions.appendleft(event)
 
     def append_event(self, category, details):
+        details = dict(details or {})
+        event_id = str(details.get("event_id", "") or "").strip()
+        if not event_id:
+            event_id = self._next_event_id()
         event = {
+            "event_id": event_id,
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "category": category,
         }
@@ -463,6 +471,13 @@ class MetricsStore(object):
             key=lambda key: self.flow_stats[key].last_seen,
         )
         del self.flow_stats[oldest_key]
+
+    def _next_event_id(self):
+        self._event_sequence += 1
+        return "evt_%013d_%06d" % (
+            int(time.time() * 1000),
+            self._event_sequence,
+        )
 
     @staticmethod
     def _flow_key(packet_metadata):

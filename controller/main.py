@@ -69,7 +69,7 @@ class SecurityController(app_manager.RyuApp):
             self.config.flow_timeouts,
             self.flow_manager,
         )
-        self.metrics = MetricsStore()
+        self.metrics = MetricsStore(max_recent_events=max(1200, self.config.dashboard.timeseries_points * 10))
         self.dashboard_state = DashboardStateWriter(self.config.dashboard)
         self.command_queue = ControllerCommandQueue()
         self.ids = ThresholdIDS(self.config.ids)
@@ -172,7 +172,25 @@ class SecurityController(app_manager.RyuApp):
         dpid = format_dpid(datapath.id)
         existing_datapath = self.state.datapaths.get(datapath.id)
         if existing_datapath is not None and existing_datapath is not datapath:
-            self._reset_runtime_state_for_datapath_reconnect(dpid)
+            if self.config.controller.reset_runtime_on_datapath_reconnect:
+                self._reset_runtime_state_for_datapath_reconnect(dpid)
+            else:
+                self.metrics.record_controller_event(
+                    "datapath_reconnect_state_preserved",
+                    {
+                        "dpid": dpid,
+                        "reason": "replacement_datapath_detected_state_preserved",
+                        "active_quarantine_count": len(self.firewall.quarantined_hosts),
+                        "recent_security_event_count": len(self.metrics.recent_events_list()),
+                    },
+                )
+                self.event_logger.controller_event(
+                    "datapath_reconnect_state_preserved",
+                    dpid=dpid,
+                    reason="replacement_datapath_detected_state_preserved",
+                    active_quarantine_count=len(self.firewall.quarantined_hosts),
+                    recent_security_event_count=len(self.metrics.recent_events_list()),
+                )
         dpid = register_datapath(self.state, datapath)
         self.flow_manager.install_table_miss(datapath)
         self.firewall.install_baseline_rules(datapath)
@@ -807,6 +825,7 @@ class SecurityController(app_manager.RyuApp):
             "controller": {
                 "openflow_host": self.config.controller.openflow_host,
                 "openflow_port": self.config.controller.openflow_port,
+                "reset_runtime_on_datapath_reconnect": self.config.controller.reset_runtime_on_datapath_reconnect,
             },
             "dashboard": {
                 "host": self.config.dashboard.host,

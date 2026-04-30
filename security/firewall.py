@@ -3,17 +3,24 @@
 import ipaddress
 import time
 from dataclasses import dataclass, field
+from uuid import uuid4
 
 
 @dataclass
 class QuarantineRecord(object):
     src_ip: str
     reason: str
+    block_id: str = field(default_factory=lambda: "blk_%s" % uuid4().hex[:12])
     created_at: float = field(default_factory=time.time)
+    last_seen_at: float = field(default_factory=time.time)
+    hit_count: int = 1
     expires_at: float = None
     detector: str = None
+    latest_detector: str = None
+    contributing_detectors: list = field(default_factory=list)
     alert_type: str = None
     related_capture: dict = field(default_factory=dict)
+    related_captures: list = field(default_factory=list)
     released_at: float = None
     released_by: str = None
 
@@ -193,20 +200,60 @@ class FirewallPolicy(object):
     ):
         if not src_ip:
             return None, False
+        detector_label = str(detector or "threshold").strip().lower() or "threshold"
+        now = time.time()
 
         current = self.quarantined_hosts.get(src_ip)
         if current is not None:
-            if related_capture and not current.related_capture:
-                current.related_capture = dict(related_capture)
+            current.last_seen_at = now
+            current.hit_count = int(current.hit_count or 0) + 1
+            current.latest_detector = detector_label
+            existing_detectors = [
+                str(item).strip().lower()
+                for item in list(current.contributing_detectors or [])
+                if str(item).strip()
+            ]
+            if not existing_detectors:
+                existing_detectors = [str(current.detector or "threshold").strip().lower()]
+            if detector_label not in existing_detectors:
+                existing_detectors.append(detector_label)
+            current.contributing_detectors = existing_detectors
+
+            incoming_capture = dict(related_capture or {})
+            if incoming_capture:
+                if not current.related_capture:
+                    current.related_capture = incoming_capture
+                existing_primary_files = set()
+                for capture_row in current.related_captures or []:
+                    capture_path = str(
+                        dict(capture_row or {}).get("primary_file", "")
+                    ).strip()
+                    if capture_path:
+                        existing_primary_files.add(capture_path)
+                if current.related_capture:
+                    primary_capture_path = str(
+                        current.related_capture.get("primary_file", "")
+                    ).strip()
+                    if primary_capture_path:
+                        existing_primary_files.add(primary_capture_path)
+                incoming_primary_path = str(
+                    incoming_capture.get("primary_file", "")
+                ).strip()
+                if incoming_primary_path and incoming_primary_path not in existing_primary_files:
+                    current.related_captures.append(incoming_capture)
             return current, False
 
         record = QuarantineRecord(
             src_ip=src_ip,
             reason=reason,
-            detector=detector,
+            detector=detector_label,
+            latest_detector=detector_label,
+            contributing_detectors=[detector_label],
             alert_type=alert_type,
             related_capture=dict(related_capture or {}),
         )
+        if record.related_capture:
+            record.related_captures = [dict(record.related_capture)]
         self.quarantined_hosts[src_ip] = record
 
         for datapath in datapaths:

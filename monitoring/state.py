@@ -320,16 +320,62 @@ class DashboardStateWriter(object):
             reverse=True,
         ):
             related_capture = dict(block.related_capture or {})
+            contributing_detectors = [
+                str(item).strip().lower()
+                for item in list(getattr(block, "contributing_detectors", []) or [])
+                if str(item).strip()
+            ]
+            normalized_contributors = []
+            seen_contributors = set()
+            for detector_name in contributing_detectors:
+                if detector_name in seen_contributors:
+                    continue
+                normalized_contributors.append(detector_name)
+                seen_contributors.add(detector_name)
+            contributing_detectors = normalized_contributors
+            if not contributing_detectors:
+                contributing_detectors = [
+                    str(getattr(block, "detector", "threshold") or "threshold")
+                    .strip()
+                    .lower()
+                ]
+            primary_detector = (
+                str(getattr(block, "detector", "threshold") or "threshold")
+                .strip()
+                .lower()
+            )
+            detector_display = primary_detector
+            secondary_detectors = [
+                item
+                for item in contributing_detectors
+                if item != primary_detector
+            ]
+            if secondary_detectors:
+                detector_display = (
+                    primary_detector
+                    + " + "
+                    + " + ".join(secondary_detectors)
+                )
             blocked_rows.append(
                 {
+                    "block_id": getattr(block, "block_id", None),
                     "src_ip": block.src_ip,
                     "reason": block.reason,
-                    "detector": block.detector or "threshold",
+                    "detector": primary_detector,
+                    "detector_display": detector_display,
+                    "latest_detector": getattr(block, "latest_detector", primary_detector),
+                    "contributing_detectors": contributing_detectors,
                     "alert_type": block.alert_type,
                     "created_at": _utc_iso(block.created_at),
                     "created_at_epoch": block.created_at,
+                    "last_seen_at": _utc_iso(
+                        getattr(block, "last_seen_at", block.created_at)
+                    ),
+                    "last_seen_at_epoch": getattr(block, "last_seen_at", block.created_at),
+                    "hit_count": int(getattr(block, "hit_count", 1) or 1),
                     "status": "quarantined",
                     "related_capture": related_capture,
+                    "related_captures": list(getattr(block, "related_captures", []) or []),
                 }
             )
         return blocked_rows
@@ -359,7 +405,7 @@ class DashboardStateWriter(object):
             ):
                 continue
             security_events.append(event)
-        return security_events[:30]
+        return security_events[:200]
 
 
 class DashboardStateReader(object):
@@ -988,6 +1034,15 @@ class DashboardDataAdapter(object):
                     related_capture["primary_file"]
                 )
             row["related_capture"] = related_capture
+            related_captures = []
+            for capture_row in list(row.get("related_captures") or []):
+                normalized_capture = dict(capture_row or {})
+                if normalized_capture.get("primary_file"):
+                    normalized_capture["download_path"] = self._download_path(
+                        normalized_capture["primary_file"]
+                    )
+                related_captures.append(normalized_capture)
+            row["related_captures"] = related_captures
         summary["active_threshold_blocks"] = active_threshold_blocks
         summary["active_ml_blocks"] = active_ml_blocks
         switches = list(state.get("switches") or [])
@@ -1031,7 +1086,7 @@ class DashboardDataAdapter(object):
         )
 
         state["recent_events"] = recent_events
-        state["recent_security_events"] = alert_rows[:30]
+        state["recent_security_events"] = alert_rows[:200]
         state["recent_ml_predictions"] = recent_ml_predictions[:30]
         state["recent_hybrid_events"] = recent_hybrid_events[:30]
         state["switches"] = switches
@@ -1039,7 +1094,7 @@ class DashboardDataAdapter(object):
         state["blocked_hosts"] = blocked_hosts
         state["traffic"] = traffic
         state["alerts"] = {
-            "rows": alert_rows[:60],
+            "rows": alert_rows[:200],
             "counts_by_severity": self._counts_by_key(alert_rows, "severity"),
             "counts_by_detector": self._counts_by_key(alert_rows, "detector"),
             "active_count": len(blocked_hosts),
@@ -1421,6 +1476,7 @@ class DashboardDataAdapter(object):
             rows.append(
                 {
                     "row_id": row_id,
+                    "event_id": event.get("event_id"),
                     "timestamp": timestamp_value,
                     "timestamp_epoch": self._timestamp_epoch(timestamp_value),
                     "category": category,
@@ -1523,6 +1579,10 @@ class DashboardDataAdapter(object):
         status,
         quarantine_status,
     ):
+        if isinstance(event, dict):
+            event_id = str(event.get("event_id", "") or "").strip()
+            if event_id:
+                return event_id
         digest_source = "|".join(
             [
                 str(timestamp or ""),
@@ -1760,7 +1820,11 @@ class DashboardDataAdapter(object):
             type(
                 "ControllerConfig",
                 (),
-                {"openflow_host": "0.0.0.0", "openflow_port": 6633},
+                {
+                    "openflow_host": "0.0.0.0",
+                    "openflow_port": 6633,
+                    "reset_runtime_on_datapath_reconnect": False,
+                },
             )(),
         )
         dashboard_config = getattr(
@@ -1923,6 +1987,11 @@ class DashboardDataAdapter(object):
             "controller": {
                 "openflow_host": controller_config.openflow_host,
                 "openflow_port": controller_config.openflow_port,
+                "reset_runtime_on_datapath_reconnect": getattr(
+                    controller_config,
+                    "reset_runtime_on_datapath_reconnect",
+                    False,
+                ),
             },
             "dashboard": {
                 "host": dashboard_config.host,

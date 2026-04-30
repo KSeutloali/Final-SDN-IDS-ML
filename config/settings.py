@@ -61,6 +61,7 @@ def _env_ids_mode(default):
 class ControllerConfig:
     openflow_host: str = "0.0.0.0"
     openflow_port: int = 6633
+    reset_runtime_on_datapath_reconnect: bool = False
 
 
 @dataclass(frozen=True)
@@ -276,6 +277,10 @@ def load_config():
         controller=ControllerConfig(
             openflow_host=_env_str("SDN_OPENFLOW_HOST", "0.0.0.0"),
             openflow_port=_env_int("SDN_OPENFLOW_PORT", 6633),
+            reset_runtime_on_datapath_reconnect=_env_bool(
+                "SDN_RESET_RUNTIME_ON_DATAPATH_RECONNECT",
+                False,
+            ),
         ),
         flow_priorities=FlowPriorityConfig(
             table_miss=_env_int("SDN_FLOW_TABLE_MISS_PRIORITY", 0),

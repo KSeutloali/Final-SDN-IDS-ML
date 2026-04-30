@@ -44,6 +44,7 @@ body {
 
 body {
   min-height: 100vh;
+  max-width: 100%;
 }
 
 html.sidebar-collapsed {
@@ -288,6 +289,7 @@ canvas {
   display: flex;
   flex-direction: column;
   min-width: 0;
+  max-width: 100%;
   min-height: 100vh;
   margin-left: var(--sidebar-active-width);
   transition: margin-left 220ms ease;
@@ -436,7 +438,14 @@ html:not(.sidebar-ready) .status-chip {
 .content {
   display: grid;
   gap: 24px;
+  min-width: 0;
+  max-width: 100%;
   padding: 4px 32px 28px;
+}
+
+.content > * {
+  min-width: 0;
+  max-width: 100%;
 }
 
 .mode-banner {
@@ -471,6 +480,14 @@ html:not(.sidebar-ready) .status-chip {
 .panel-grid {
   display: grid;
   gap: 20px;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.card-grid > *,
+.panel-grid > * {
+  min-width: 0;
+  max-width: 100%;
 }
 
 .card-grid--metrics {
@@ -488,6 +505,8 @@ html:not(.sidebar-ready) .status-chip {
 .metric-card,
 .panel {
   position: relative;
+  min-width: 0;
+  max-width: 100%;
   border: 1px solid var(--panel-border);
   border-radius: var(--radius-lg);
   background: var(--panel);
@@ -684,7 +703,11 @@ html:not(.sidebar-ready) .status-chip {
 }
 
 .table-shell {
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
   overflow-x: auto;
+  overflow-y: hidden;
   border-radius: 16px;
   border: 1px solid rgba(148, 163, 184, 0.14);
   background: var(--panel-muted);
@@ -696,10 +719,16 @@ html:not(.sidebar-ready) .status-chip {
 
 .table-scroll-layout {
   display: block;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
 }
 
 .table-shell--scroll {
   position: relative;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
   height: 356px;
   max-height: 356px;
   overflow-x: auto;
@@ -763,7 +792,8 @@ html:not(.sidebar-ready) .status-chip {
 }
 
 .data-table {
-  width: 100%;
+  width: max-content;
+  min-width: 100%;
   border-collapse: collapse;
   font-size: 0.94rem;
 }
