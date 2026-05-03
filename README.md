@@ -2,11 +2,14 @@
 
 This repository provides a modular SDN security testbed built around Mininet and Ryu v4.30. The current implementation includes OpenFlow 1.3 forwarding, static firewall policy, threshold-based IDS, optional ML-assisted IDS, continuous packet capture with preserved alert snapshots, and a lightweight Flask dashboard backed by shared controller state snapshots.
 
-## Demo Brief
+## Documentation
 
-For a supervisor presentation or viva-style walkthrough, use:
+Use these project documents for setup, testing, and report support:
 
-- [SUPERVISOR_DEMO_BRIEF.md](SUPERVISOR_DEMO_BRIEF.md)
+- [playbook.md](playbook.md)
+- [sdn_firewall_ids_test_playbook.md](sdn_firewall_ids_test_playbook.md)
+- [appendix_recon_findings.md](appendix_recon_findings.md)
+- [experiments/README.md](experiments/README.md)
 
 ## Repository Layout
 
@@ -162,7 +165,7 @@ For a supervisor presentation or viva-style walkthrough, use:
 This project does not implement a full firewall-rule editor UI. Policy management is intentionally split into two clear layers that are easier to explain and defend in the report:
 
 1. **Configuration-driven baseline policy**
-   - Baseline firewall, IDS, ML, capture, and dashboard behavior are defined in [config/settings.py](/home/seutloali/Downloads/Project%20@.0/SDN%20Project/config/settings.py).
+   - Baseline firewall, IDS, ML, capture, and dashboard behavior are defined in [config/settings.py](config/settings.py).
    - Docker and experiment runs can override those values through `.env` or per-run environment variables.
    - This is where you define restricted ports, IDS thresholds, ML mode, capture retention, and mitigation behavior.
 
